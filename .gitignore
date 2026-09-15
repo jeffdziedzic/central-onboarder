@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+Command Outputs/
+
+# Local machine state - see core/credential_store.py and core/workspace.py
+credentials.json
+workspace.json

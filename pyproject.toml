@@ -1,0 +1,34 @@
+[project]
+name = "central-onboarder"
+version = "0.1.0"
+description = "Central Onboarder - unofficial, unsupported field utility for onboarding new devices onto GLCP/New Central/Classic Central"
+requires-python = ">=3.11"
+dependencies = [
+    "openpyxl>=3.1",
+    "requests>=2.31",
+    "tzdata; sys_platform == 'win32'",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+gui = [
+    "pywebview>=6.2",
+]
+windows-build = [
+    # Build-time only (PyInstaller). Not needed at runtime. Packaging
+    # is deferred - see central_onboarder's own README/CHANGELOG.
+    "pyinstaller>=6.0; sys_platform == 'win32'",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["central_onboarder*"]
+
+[tool.setuptools.package-data]
+"central_onboarder.assets" = ["*.xlsx", "*.md"]
+"central_onboarder.gui" = ["static/*.html", "static/css/*.css", "static/js/*.js"]

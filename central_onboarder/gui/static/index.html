@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Central Onboarder</title>
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+
+<div class="shell">
+  <aside class="sidebar">
+    <div class="appname">Central<br>Onboarder</div>
+    <div class="appver" id="appVersion">v0.1.0</div>
+    <nav class="nav">
+      <button class="nav-item" data-screen="home">Home</button>
+      <button class="nav-item" data-screen="credentials">Credentials</button>
+      <button class="nav-item" data-screen="devicelist">Device List</button>
+      <button class="nav-item" data-screen="onboard">Onboard</button>
+      <button class="nav-item" data-screen="preprovision">Pre-Provision</button>
+      <button class="nav-item" data-screen="assignsite">Assign Site</button>
+      <button class="nav-item" data-screen="tools">Tools</button>
+    </nav>
+    <div class="sig">Central Onboarder</div>
+  </aside>
+
+  <main class="content">
+    <div class="workspace-bar">
+      <span id="workspaceLabel">No working device list set</span>
+      <button class="link-btn" id="changeSheetBtn">Change&hellip;</button>
+      <button class="link-btn" id="newSheetBtn">New&hellip;</button>
+      <span id="workspaceError" class="save-note error" hidden></span>
+    </div>
+
+    <section id="screen-home" class="screen">
+      <h1 class="pagetitle">Home</h1>
+      <p class="pagesub">Onboards new APs, switches, and gateways onto GLCP, New Central, and Classic Central.</p>
+      <p style="color:var(--danger); font-size:15px">This is not an official tool. It was created around a single environment's use case by an amateur coder. Use at your own risk.</p>
+      <p>General flow: set up Credentials, then build a Device List (import a CSV or add devices manually). Onboard adds devices to GLCP, assigns a subscription, and assigns the Central service. Pre-Provision assigns a Classic Central group. Once devices have actually checked into Central, Assign Site assigns their New Central site. See the user guide for more details.</p>
+      <div class="card">
+        <div class="card-title">Links</div>
+        <button class="link-btn" id="userGuideLink" style="display:block;margin-bottom:8px">User Guide</button>
+        <button class="link-btn" id="changelogLink" style="display:block">Change Log</button>
+      </div>
+    </section>
+
+    <section id="screen-credentials" class="screen" hidden>
+      <h1 class="pagetitle">Credentials</h1>
+      <p class="pagesub">Stored locally in <code>credentials.json</code>, never synced. Test checks a credential without writing anything.</p>
+
+      <div class="card">
+        <div class="card-head"><span class="card-title">Validate all Credentials</span></div>
+        <button class="btn primary" id="testAllBtn">Test All</button>
+        <div id="testResults"></div>
+      </div>
+
+      <div class="card" data-category="central">
+        <div class="card-head">
+          <span class="card-title">GreenLake Cloud Platform &amp; New Central</span>
+          <span class="status-pill idle" data-status="central"></span>
+          <button class="link-btn hint-toggle" data-hint="central">How do I get this?</button>
+        </div>
+        <p class="hint-text" data-hint-text="central" hidden></p>
+        <div class="field"><label>Account name</label><input type="text" data-field="account"></div>
+        <div class="field"><label>Base URL</label><input type="text" data-field="base_url" placeholder="us1.api.central.arubanetworks.com"></div>
+        <div class="field"><label>Client ID</label><span class="masked-input"><input type="password" data-field="client_id"><button class="reveal-btn" type="button">&#128065;</button></span></div>
+        <div class="field"><label>Client secret</label><span class="masked-input"><input type="password" data-field="client_secret"><button class="reveal-btn" type="button">&#128065;</button></span></div>
+        <button class="btn primary save-btn" data-save="central">Save</button>
+        <button class="btn test-btn" data-test="central">Test</button>
+        <button class="btn danger wipe-btn" data-wipe="central">Wipe</button>
+        <p class="save-note" data-test-result="central"></p>
+      </div>
+
+      <div class="card" data-category="classic">
+        <div class="card-head">
+          <span class="card-title">Classic Central</span>
+          <span class="status-pill idle" data-status="classic"></span>
+          <button class="link-btn hint-toggle" data-hint="classic">How do I get this?</button>
+        </div>
+        <p class="hint-text" data-hint-text="classic" hidden></p>
+        <div class="field"><label>Account name</label><input type="text" data-field="account"></div>
+        <div class="field"><label>Base URL</label><input type="text" data-field="base_url" placeholder="app1-apigw.central.arubanetworks.com"></div>
+        <div class="field"><label>Client ID</label><span class="masked-input"><input type="password" data-field="client_id"><button class="reveal-btn" type="button">&#128065;</button></span></div>
+        <div class="field"><label>Client secret</label><span class="masked-input"><input type="password" data-field="client_secret"><button class="reveal-btn" type="button">&#128065;</button></span></div>
+        <div class="field"><label>Refresh token</label><span class="masked-input"><input type="password" data-field="refresh_token"><button class="reveal-btn" type="button">&#128065;</button></span></div>
+        <button class="btn primary save-btn" data-save="classic">Save</button>
+        <button class="btn test-btn" data-test="classic">Test</button>
+        <button class="btn danger wipe-btn" data-wipe="classic">Wipe</button>
+        <p class="save-note" data-test-result="classic"></p>
+      </div>
+
+      <div class="card" data-category="ap_ssh">
+        <div class="card-head">
+          <span class="card-title">AP SSH (not used yet)</span>
+          <span class="status-pill idle" data-status="ap_ssh"></span>
+          <button class="link-btn hint-toggle" data-hint="ap_ssh">How do I get this?</button>
+        </div>
+        <p class="hint-text" data-hint-text="ap_ssh" hidden></p>
+        <div class="field"><label>Account name</label><input type="text" data-field="account"></div>
+        <div class="field"><label>Username</label><input type="text" data-field="username"></div>
+        <div class="field"><label>Password</label><span class="masked-input"><input type="password" data-field="password"><button class="reveal-btn" type="button">&#128065;</button></span></div>
+        <div class="field"><label>AP IP</label><input type="text" id="apSshIp" placeholder="192.0.2.220"></div>
+        <button class="btn primary save-btn" data-save="ap_ssh">Save</button>
+        <button class="btn danger wipe-btn" data-wipe="ap_ssh">Wipe</button>
+        <p class="save-note" data-test-result="ap_ssh"></p>
+        <p class="fine-print">Stored for possible future use - no action in this tool reads it yet.</p>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><span class="card-title">Wipe All Credentials</span></div>
+        <p class="fine-print">Removes everything stored. Cannot be undone; you'll need to re-enter everything from scratch.</p>
+        <button class="btn danger" id="wipeAllCredentialsBtn">Wipe All Credentials</button>
+        <p class="save-note" id="wipeAllCredentialsResult"></p>
+      </div>
+    </section>
+
+    <section id="screen-devicelist" class="screen" hidden>
+      <h1 class="pagetitle">Device List</h1>
+      <p class="pagesub">Import a CSV, or add/edit devices below. Serial is the key - re-importing/re-adding a serial already in the list updates it in place.</p>
+
+      <div class="card">
+        <div class="card-title">Import CSV</div>
+        <p class="fine-print">Columns: Serial, MAC, Device Type, Target Group, Target Site, Subscription Key (any casing/spacing).</p>
+        <button class="btn" id="downloadCsvTemplateBtn">Download Template&hellip;</button>
+        <button class="btn primary" id="importCsvBtn">Import CSV&hellip;</button>
+        <div id="importCsvResult"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Add Device</div>
+        <div class="field"><label>Serial</label><input type="text" id="addSerial"></div>
+        <div class="field"><label>MAC</label><input type="text" id="addMac" placeholder="11:22:33:44:AA:BB"></div>
+        <div class="field"><label>Device Type</label>
+          <select id="addDeviceType"><option value=""></option><option>AP</option><option>Switch</option><option>Gateway</option></select>
+        </div>
+        <div class="field"><label>Target Group</label><input type="text" id="addTargetGroup" list="groupOptions"></div>
+        <div class="field"><label>Target Site</label><input type="text" id="addTargetSite" list="siteOptions"></div>
+        <div class="field"><label>Subscription Key</label><input type="text" id="addSubscriptionKey"></div>
+        <datalist id="groupOptions"></datalist>
+        <datalist id="siteOptions"></datalist>
+        <button class="btn primary" id="addDeviceBtn">Add / Update Device</button>
+        <button class="btn" id="loadDestinationsBtn">Refresh Group/Site options from New Central</button>
+        <div id="addDeviceResult"></div>
+      </div>
+
+      <div class="grid-toolbar">
+        <span id="gridSelectedCount" class="fine-print"></span>
+        <button class="btn" id="refreshDevicesBtn">Refresh</button>
+      </div>
+      <div class="grid-wrap">
+        <table class="grid" id="deviceGrid">
+          <thead>
+            <tr>
+              <th class="chk-col"><input type="checkbox" id="deviceGridSelectAll"></th>
+              <th>Serial</th><th>MAC</th><th>Type</th><th>Target Group</th><th>Target Site</th>
+              <th>Sub. Key</th><th>GLCP</th><th>Sub.</th><th>Service</th><th>Preprov.</th><th>Site</th>
+            </tr>
+          </thead>
+          <tbody id="deviceGridBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="screen-onboard" class="screen" hidden>
+      <h1 class="pagetitle">Onboard</h1>
+      <p class="pagesub">Adds every device not yet marked "GLCP" in the Device List to GLCP, assigns the Central service, and assigns a subscription (for rows with a Subscription Key set).</p>
+      <div class="card">
+        <button class="btn primary" id="runOnboardBatchBtn">Run Onboard Batch</button>
+        <div id="onboardBatchResult"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Manual: Assign Subscription</div>
+        <div class="field"><label>Serial(s)/MAC(s)</label><input type="text" id="manualSubIdentifiers" placeholder="comma-separated"></div>
+        <div class="field"><label>Subscription Key</label><input type="text" id="manualSubKey"></div>
+        <button class="btn" id="manualAssignSubBtn">Assign</button>
+        <button class="btn danger" id="manualRemoveSubBtn">Remove</button>
+        <div id="manualSubResult"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Manual: Assign Service</div>
+        <p class="fine-print">Attaches to the Central application. Leave Application ID blank to auto-discover from another already-assigned device in this workspace.</p>
+        <div class="field"><label>Serial(s)/MAC(s)</label><input type="text" id="manualServiceIdentifiers" placeholder="comma-separated"></div>
+        <div class="field"><label>Application ID</label><input type="text" id="manualServiceAppId" placeholder="optional"></div>
+        <button class="btn" id="manualAssignServiceBtn">Assign</button>
+        <div id="manualServiceResult"></div>
+      </div>
+    </section>
+
+    <section id="screen-preprovision" class="screen" hidden>
+      <h1 class="pagetitle">Pre-Provision</h1>
+      <p class="pagesub">Assigns every Device List row with a Target Group set, and not yet marked "Preprov.", to that group in Classic Central.</p>
+      <div class="card">
+        <button class="btn primary" id="runPreprovisionBtn">Run Pre-Provision</button>
+        <div id="preprovisionResult"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Check Status</div>
+        <div class="field"><label>Serial</label><input type="text" id="checkStatusSerial"></div>
+        <button class="btn" id="checkDeviceGroupBtn">Check Group</button>
+        <button class="btn" id="checkApStatusBtn">Check Status</button>
+        <div id="checkStatusResult"></div>
+      </div>
+    </section>
+
+    <section id="screen-assignsite" class="screen" hidden>
+      <h1 class="pagetitle">Assign Site</h1>
+      <p class="pagesub">Manual step - run this once you know the relevant devices have actually checked into Central. Assigns every Device List row with a Target Site set, and not yet marked "Site", to that site.</p>
+      <div class="card">
+        <button class="btn primary" id="runAssignSiteBtn">Run Assign Site</button>
+        <div id="assignSiteResult"></div>
+      </div>
+    </section>
+
+    <section id="screen-tools" class="screen" hidden>
+      <h1 class="pagetitle">Tools</h1>
+
+      <div class="card">
+        <div class="card-title">Create New Central Site</div>
+        <div class="field"><label>Name</label><input type="text" id="createSiteName"></div>
+        <div class="field"><label>Address</label><input type="text" id="createSiteAddress"></div>
+        <div class="field"><label>City</label><input type="text" id="createSiteCity"></div>
+        <div class="field"><label>State</label><input type="text" id="createSiteState" placeholder="Texas (full name, not TX)"></div>
+        <div class="field"><label>Zip</label><input type="text" id="createSiteZip"></div>
+        <div class="field"><label>Country</label><input type="text" id="createSiteCountry" value="United States"></div>
+        <div class="field"><label>Timezone</label><input type="text" id="createSiteTimezone" value="America/Chicago"></div>
+        <button class="btn primary" id="createSiteBtn">Create Site</button>
+        <div id="createSiteResult"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Reset to Default</div>
+        <p class="fine-print">Clears the working device list pointer and every stored credential. Never deletes any actual file.</p>
+        <button class="btn danger" id="resetToDefaultBtn">Reset to Default</button>
+        <p class="save-note" id="resetToDefaultResult"></p>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div class="modal-overlay" id="confirmModalOverlay" hidden>
+  <div class="modal">
+    <div class="modal-title" id="modalTitle"></div>
+    <p class="modal-message" id="modalMessage"></p>
+    <input type="text" class="modal-input" id="modalConfirmInput">
+    <div class="modal-actions">
+      <button class="btn" id="modalCancelBtn">Cancel</button>
+      <button class="btn danger" id="modalConfirmBtn" disabled></button>
+    </div>
+  </div>
+</div>
+
+<script src="js/app.js"></script>
+</body>
+</html>

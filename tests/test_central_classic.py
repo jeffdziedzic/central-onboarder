@@ -1,0 +1,156 @@
+from unittest.mock import MagicMock
+
+import pytest
+
+from central_onboarder.core import central_classic as cc
+
+
+def _client():
+    tm = MagicMock()
+    tm.get_token.return_value = "tok"
+    return cc.ClassicCentralClient("https://example.test", tm)
+
+
+def test_preprovision_device_to_group_posts_expected_body():
+    c = _client()
+    c.post = MagicMock(return_value={"status": 200, "body": {"ok": True}})
+    result = cc.preprovision_device_to_group(c, "Building-1-APs", ["S1", "S2"])
+    c.post.assert_called_once_with(
+        "configuration/v1/devices/move", body={"group": "Building-1-APs", "serials": ["S1", "S2"]}
+    )
+    assert result == {"ok": True}
+
+
+def test_preprovision_device_to_group_rejects_too_many_serials():
+    c = _client()
+    c.post = MagicMock()
+    with pytest.raises(ValueError):
+        cc.preprovision_device_to_group(c, "group", [f"S{i}" for i in range(51)])
+    c.post.assert_not_called()
+
+
+def test_get_device_group_returns_group_name():
+    c = _client()
+    c.get = MagicMock(return_value={"status": 200, "body": {"group": "Building-1-APs"}})
+    assert cc.get_device_group(c, "S1") == "Building-1-APs"
+
+
+def test_get_device_group_returns_none_when_absent():
+    c = _client()
+    c.get = MagicMock(return_value={"status": 200, "body": {}})
+    assert cc.get_device_group(c, "S1") is None
+
+
+def test_get_ap_status_seen():
+    c = _client()
+    c.get = MagicMock(return_value={"status": 200, "body": {
+        "status": "Up", "group_name": "g1", "site_name": "s1", "firmware_version": "10.5",
+    }})
+    status = cc.get_ap_status(c, "S1")
+    assert status.seen is True
+    assert status.status == "Up"
+    assert status.site_name == "s1"
+
+
+def test_get_ap_status_404_means_not_seen():
+    c = _client()
+    c.get = MagicMock(side_effect=cc.ClassicAPIError("not found", status=404))
+    status = cc.get_ap_status(c, "S1")
+    assert status.seen is False
+    assert status.status is None
+
+
+def test_get_ap_status_reraises_non_404():
+    c = _client()
+    c.get = MagicMock(side_effect=cc.ClassicAPIError("server error", status=500))
+    with pytest.raises(cc.ClassicAPIError):
+        cc.get_ap_status(c, "S1")
+
+
+def test_list_sites_single_short_page():
+    c = _client()
+    c.get = MagicMock(return_value={
+        "status": 200, "body": {"sites": [{"site_name": "Site A", "site_id": 1}], "total": 1},
+    })
+    assert cc.list_sites(c) == {"Site A": 1}
+
+
+def test_list_sites_paginates_across_full_pages():
+    # list_sites' own stop condition is "page shorter than the 100-item
+    # page size" (no cursor field to key off) - so a first page must be
+    # a FULL 100 items to continue to a second, shorter page.
+    c = _client()
+    full_page = [{"site_name": f"Site {i}", "site_id": i} for i in range(100)]
+    responses = iter([
+        {"status": 200, "body": {"sites": full_page, "total": 101}},
+        {"status": 200, "body": {"sites": [{"site_name": "Site 100", "site_id": 100}], "total": 101}},
+    ])
+    c.get = MagicMock(side_effect=lambda *a, **k: next(responses))
+    sites = cc.list_sites(c)
+    assert len(sites) == 101
+    assert sites["Site 100"] == 100
+
+
+def test_associate_devices_to_site_posts_expected_body():
+    c = _client()
+    c.post = MagicMock(return_value={"status": 200, "body": {"ok": True}})
+    cc.associate_devices_to_site(c, 42, cc.DEVICE_TYPE_SWITCH, ["S1"])
+    c.post.assert_called_once_with(
+        "central/v2/sites/associations",
+        body={"site_id": 42, "device_type": "SWITCH", "device_ids": ["S1"]},
+    )
+
+
+def test_device_type_constants_cover_ap_switch_gateway():
+    assert cc.DEVICE_TYPE_AP == "IAP"
+    assert cc.DEVICE_TYPE_SWITCH == "SWITCH"
+    # DEVICE_TYPE_GATEWAY is this project's own addition (not present in
+    # the sibling conversion project, which only ever handled APs) - an
+    # unverified judgment call, see the repo's README for the caveat.
+    assert cc.DEVICE_TYPE_GATEWAY == "CONTROLLER"
+
+
+def test_token_manager_sends_refresh_token_grant():
+    tm = cc.ClassicTokenManager("https://example.test", "cid", "csecret", "rt-old")
+    session = MagicMock()
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.json.return_value = {"access_token": "tok", "expires_in": 7200}
+    session.post.return_value = resp
+    tm._session = session
+
+    token = tm.get_token()
+    assert token == "tok"
+    args, kwargs = session.post.call_args
+    assert args[0] == "https://example.test/oauth2/token"
+    assert kwargs["params"]["grant_type"] == "refresh_token"
+    assert kwargs["params"]["refresh_token"] == "rt-old"
+
+
+def test_token_manager_rotates_refresh_token_and_calls_back():
+    rotated = []
+    tm = cc.ClassicTokenManager(
+        "https://example.test", "cid", "csecret", "rt-old",
+        on_refresh_token_rotated=lambda new_rt: rotated.append(new_rt),
+    )
+    session = MagicMock()
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.json.return_value = {"access_token": "tok", "expires_in": 7200, "refresh_token": "rt-new"}
+    session.post.return_value = resp
+    tm._session = session
+
+    tm.get_token()
+    assert rotated == ["rt-new"]
+
+
+def test_token_manager_raises_on_non_200():
+    tm = cc.ClassicTokenManager("https://example.test", "cid", "csecret", "rt-old")
+    session = MagicMock()
+    resp = MagicMock()
+    resp.status_code = 401
+    session.post.return_value = resp
+    tm._session = session
+
+    with pytest.raises(cc.ClassicAuthError):
+        tm.get_token()
