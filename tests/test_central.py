@@ -41,6 +41,16 @@ def test_paginate_follows_offset_style_next_cursor():
     assert items == [{"id": 1}, {"id": 2}]
 
 
+def test_list_service_managers_returns_raw_items():
+    c = _client()
+    c.get = MagicMock(return_value={
+        "status": 200,
+        "body": {"items": [{"id": "svc-1", "name": "HPE Aruba Networking UXI"}], "total": 1},
+    })
+    assert central.list_service_managers(c) == [{"id": "svc-1", "name": "HPE Aruba Networking UXI"}]
+    c.get.assert_called_once_with("service-catalog/v1/service-managers", params={"limit": 100})
+
+
 def test_list_device_groups_maps_name_to_scope_id():
     c = _client()
     c.get = MagicMock(return_value={

@@ -16,11 +16,10 @@
       <button class="nav-item" data-screen="credentials">Credentials</button>
       <button class="nav-item" data-screen="devicelist">Device List</button>
       <button class="nav-item" data-screen="onboard">Onboard</button>
-      <button class="nav-item" data-screen="preprovision">Pre-Provision</button>
       <button class="nav-item" data-screen="assignsite">Assign Site</button>
       <button class="nav-item" data-screen="tools">Tools</button>
     </nav>
-    <div class="sig">Central Onboarder</div>
+    <div class="sig">Created by DZWIFI</div>
   </aside>
 
   <main class="content">
@@ -33,14 +32,18 @@
 
     <section id="screen-home" class="screen">
       <h1 class="pagetitle">Home</h1>
-      <p class="pagesub">Onboards new APs, switches, and gateways onto GLCP, New Central, and Classic Central.</p>
+      <p class="pagesub">Onboards new APs, switches, gateways, and UXI sensors onto GLCP, New Central, Classic Central, and the UXI application.</p>
       <p style="color:var(--danger); font-size:15px">This is not an official tool. It was created around a single environment's use case by an amateur coder. Use at your own risk.</p>
-      <p>General flow: set up Credentials, then build a Device List (import a CSV or add devices manually). Onboard adds devices to GLCP, assigns a subscription, and assigns the Central service. Pre-Provision assigns a Classic Central group. Once devices have actually checked into Central, Assign Site assigns their New Central site. See the user guide for more details.</p>
-      <div class="card">
-        <div class="card-title">Links</div>
-        <button class="link-btn" id="userGuideLink" style="display:block;margin-bottom:8px">User Guide</button>
-        <button class="link-btn" id="changelogLink" style="display:block">Change Log</button>
-      </div>
+      <p class="card-title">General flow</p>
+      <ol>
+        <li>Set up Credentials</li>
+        <li>Build a Device List (CSV or add manually)</li>
+        <li>Onboard adds devices to GLCP, assigns a subscription, assigns the service, and pre-provisions a Classic Central group, all in one Run Onboard Batch</li>
+        <li>Once devices have checked into Central, Assign Site assigns their New Central site</li>
+      </ol>
+      <p>See the user guide for more details.</p>
+      <p><button class="link-btn" id="userGuideLink">User Guide</button></p>
+      <p><button class="link-btn" id="changelogLink">Change Log</button></p>
     </section>
 
     <section id="screen-credentials" class="screen" hidden>
@@ -105,6 +108,18 @@
         <p class="fine-print">Stored for possible future use - no action in this tool reads it yet.</p>
       </div>
 
+      <div class="card" data-category="uxi">
+        <div class="card-head"><span class="card-title">UXI Application</span></div>
+        <p class="fine-print">Not a credential - the GreenLake application_id (and region, if applicable) for the UXI application, used to assign UXI rows their service. Auto-discovery (like Central's) has nothing to find this from until at least one UXI sensor has been assigned once, so it needs to be entered here.</p>
+        <div class="field"><label>Application ID</label><input type="text" data-field="application_id"></div>
+        <div class="field"><label>Region</label><input type="text" data-field="region" placeholder="optional"></div>
+        <button class="btn primary save-btn" data-save="uxi">Save</button>
+        <button class="btn danger wipe-btn" data-wipe="uxi">Wipe</button>
+        <button class="btn" id="listGlcpServicesBtn">Look up from GLCP&hellip;</button>
+        <p class="save-note" data-test-result="uxi"></p>
+        <div id="glcpServicesResult"></div>
+      </div>
+
       <div class="card">
         <div class="card-head"><span class="card-title">Wipe All Credentials</span></div>
         <p class="fine-print">Removes everything stored. Cannot be undone; you'll need to re-enter everything from scratch.</p>
@@ -130,10 +145,11 @@
         <div class="field"><label>Serial</label><input type="text" id="addSerial"></div>
         <div class="field"><label>MAC</label><input type="text" id="addMac" placeholder="11:22:33:44:AA:BB"></div>
         <div class="field"><label>Device Type</label>
-          <select id="addDeviceType"><option value=""></option><option>AP</option><option>Switch</option><option>Gateway</option></select>
+          <select id="addDeviceType"><option value=""></option><option>AP</option><option>Switch</option><option>Gateway</option><option>UXI</option></select>
         </div>
         <div class="field"><label>Target Group</label><input type="text" id="addTargetGroup" list="groupOptions"></div>
         <div class="field"><label>Target Site</label><input type="text" id="addTargetSite" list="siteOptions"></div>
+        <p class="fine-print">Leave Target Group/Target Site blank for UXI rows.</p>
         <div class="field"><label>Subscription Key</label><input type="text" id="addSubscriptionKey"></div>
         <datalist id="groupOptions"></datalist>
         <datalist id="siteOptions"></datalist>
@@ -150,7 +166,6 @@
         <table class="grid" id="deviceGrid">
           <thead>
             <tr>
-              <th class="chk-col"><input type="checkbox" id="deviceGridSelectAll"></th>
               <th>Serial</th><th>MAC</th><th>Type</th><th>Target Group</th><th>Target Site</th>
               <th>Sub. Key</th><th>GLCP</th><th>Sub.</th><th>Service</th><th>Preprov.</th><th>Site</th>
             </tr>
@@ -162,14 +177,46 @@
 
     <section id="screen-onboard" class="screen" hidden>
       <h1 class="pagetitle">Onboard</h1>
-      <p class="pagesub">Adds every device not yet marked "GLCP" in the Device List to GLCP, assigns the Central service, and assigns a subscription (for rows with a Subscription Key set).</p>
+      <p class="pagesub">Adds every device not yet marked "GLCP" in the Device List to GLCP, assigns the Central service, and assigns a subscription (for rows with a Subscription Key set) - then assigns every row with a Target Group set, and not yet marked "Preprov.", to that group in Classic Central.</p>
       <div class="card">
         <button class="btn primary" id="runOnboardBatchBtn">Run Onboard Batch</button>
+        <p class="fine-print">Add devices to GLCP, assign service, assign subscription, and assign target group (pre-provision), in that order.</p>
         <div id="onboardBatchResult"></div>
       </div>
 
       <div class="card">
+        <div class="card-title">Check Status</div>
+        <p class="fine-print">Looks up a device's full state across GLCP/New Central (in GLCP, service, subscription) and Classic Central (pre-provisioned group, site, checked in).</p>
+        <div class="field"><label>Serial or MAC</label><input type="text" id="checkStatusSerial"></div>
+        <button class="btn" id="checkFullStatusBtn">Check Status</button>
+        <div id="checkStatusResult"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Manual: Add to GLCP</div>
+        <p class="fine-print">Needs both a Serial and a MAC per device, paired in order. Or check "Pull from Device List" to instead add every row not yet marked "GLCP" using each row's own Serial/MAC (Serial(s)/MAC(s) fields below are ignored in that mode).</p>
+        <label class="fine-print"><input type="checkbox" id="manualGlcpPullFromCsv"> Pull from Device List (adds every eligible row in the sheet)</label>
+        <div class="field"><label>Serial(s)</label><input type="text" id="manualGlcpSerials" placeholder="comma-separated"></div>
+        <div class="field"><label>MAC(s)</label><input type="text" id="manualGlcpMacs" placeholder="comma-separated"></div>
+        <button class="btn" id="manualAddToGlcpBtn">Add</button>
+        <div id="manualGlcpResult"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Manual: Assign Service</div>
+        <p class="fine-print">Attaches to the Central application. Leave Application ID blank to auto-discover from another already-assigned device in this workspace. Or check "Pull from Device List" to instead assign every row not yet marked "Service" - UXI rows get the UXI application, everything else gets Central (Serial(s)/MAC(s) and Application ID fields below are ignored in that mode).</p>
+        <label class="fine-print"><input type="checkbox" id="manualServicePullFromCsv"> Pull from Device List (assigns every eligible row in the sheet)</label>
+        <div class="field"><label>Serial(s)/MAC(s)</label><input type="text" id="manualServiceIdentifiers" placeholder="comma-separated"></div>
+        <div class="field"><label>Application ID</label><input type="text" id="manualServiceAppId" placeholder="optional"></div>
+        <button class="btn" id="manualAssignServiceBtn">Assign</button>
+        <button class="btn danger" id="manualRemoveServiceBtn">Remove</button>
+        <div id="manualServiceResult"></div>
+      </div>
+
+      <div class="card">
         <div class="card-title">Manual: Assign Subscription</div>
+        <p class="fine-print">Check "Pull from Device List" to instead assign every row with a Subscription Key set and not yet marked "Sub.", using each row's own key (Serial(s)/MAC(s) and Subscription Key fields below are ignored in that mode).</p>
+        <label class="fine-print"><input type="checkbox" id="manualSubPullFromCsv"> Pull from Device List (assigns every eligible row in the sheet)</label>
         <div class="field"><label>Serial(s)/MAC(s)</label><input type="text" id="manualSubIdentifiers" placeholder="comma-separated"></div>
         <div class="field"><label>Subscription Key</label><input type="text" id="manualSubKey"></div>
         <button class="btn" id="manualAssignSubBtn">Assign</button>
@@ -178,29 +225,13 @@
       </div>
 
       <div class="card">
-        <div class="card-title">Manual: Assign Service</div>
-        <p class="fine-print">Attaches to the Central application. Leave Application ID blank to auto-discover from another already-assigned device in this workspace.</p>
-        <div class="field"><label>Serial(s)/MAC(s)</label><input type="text" id="manualServiceIdentifiers" placeholder="comma-separated"></div>
-        <div class="field"><label>Application ID</label><input type="text" id="manualServiceAppId" placeholder="optional"></div>
-        <button class="btn" id="manualAssignServiceBtn">Assign</button>
-        <div id="manualServiceResult"></div>
-      </div>
-    </section>
-
-    <section id="screen-preprovision" class="screen" hidden>
-      <h1 class="pagetitle">Pre-Provision</h1>
-      <p class="pagesub">Assigns every Device List row with a Target Group set, and not yet marked "Preprov.", to that group in Classic Central.</p>
-      <div class="card">
-        <button class="btn primary" id="runPreprovisionBtn">Run Pre-Provision</button>
-        <div id="preprovisionResult"></div>
-      </div>
-
-      <div class="card">
-        <div class="card-title">Check Status</div>
-        <div class="field"><label>Serial</label><input type="text" id="checkStatusSerial"></div>
-        <button class="btn" id="checkDeviceGroupBtn">Check Group</button>
-        <button class="btn" id="checkApStatusBtn">Check Status</button>
-        <div id="checkStatusResult"></div>
+        <div class="card-title">Pre-Provision (Classic Central group)</div>
+        <p class="fine-print">Already included in Run Onboard Batch above. Assigns explicit devices to a group directly (Classic Central's API expects Serial(s) specifically; a MAC may not be accepted) - or check "Pull from Device List" to instead assign every row with a Target Group set and not yet marked "Preprov." to its own Target Group (Group/Serial(s) fields below are ignored in that mode), e.g. to retry just this step without repeating the GLCP steps.</p>
+        <label class="fine-print"><input type="checkbox" id="manualPreprovisionPullFromCsv"> Pull from Device List (assigns every eligible row in the sheet)</label>
+        <div class="field"><label>Group</label><input type="text" id="manualPreprovisionGroup" placeholder="exact Central group name"></div>
+        <div class="field"><label>Serial(s)/MAC(s)</label><input type="text" id="manualPreprovisionIdentifiers" placeholder="comma-separated"></div>
+        <button class="btn" id="manualPreprovisionBtn">Assign</button>
+        <div id="manualPreprovisionResult"></div>
       </div>
     </section>
 
@@ -208,26 +239,52 @@
       <h1 class="pagetitle">Assign Site</h1>
       <p class="pagesub">Manual step - run this once you know the relevant devices have actually checked into Central. Assigns every Device List row with a Target Site set, and not yet marked "Site", to that site.</p>
       <div class="card">
-        <button class="btn primary" id="runAssignSiteBtn">Run Assign Site</button>
-        <div id="assignSiteResult"></div>
+        <div class="card-title">Assign Site</div>
+        <p class="fine-print">Assigns explicit serials to a site directly - doesn't require the devices to be tracked in the Device List. Or check "Pull from Device List" to instead assign every Device List row with a Target Site set, and not yet marked "Site", to its own Target Site (Serial(s)/Device Type/Site Name fields below are ignored in that mode).</p>
+        <label class="fine-print"><input type="checkbox" id="manualSitePullFromCsv"> Pull from Device List (assigns every eligible row in the sheet to its own Target Site)</label>
+        <div class="field"><label>Serial(s)</label><input type="text" id="manualSiteSerials" placeholder="comma-separated"></div>
+        <div class="field">
+          <label>Device Type</label>
+          <select id="manualSiteDeviceType">
+            <option value="AP">AP</option>
+            <option value="Switch">Switch</option>
+            <option value="Gateway">Gateway</option>
+          </select>
+        </div>
+        <div class="field"><label>Site Name</label><input type="text" id="manualSiteName" list="manualSiteOptions"></div>
+        <datalist id="manualSiteOptions"></datalist>
+        <button class="btn" id="pullClassicSitesBtn">Pull Sites</button>
+        <button class="btn" id="manualAssignSiteBtn">Assign</button>
+        <div id="manualAssignSiteResult"></div>
       </div>
-    </section>
-
-    <section id="screen-tools" class="screen" hidden>
-      <h1 class="pagetitle">Tools</h1>
 
       <div class="card">
-        <div class="card-title">Create New Central Site</div>
+        <div class="card-title">Create New Site</div>
         <div class="field"><label>Name</label><input type="text" id="createSiteName"></div>
         <div class="field"><label>Address</label><input type="text" id="createSiteAddress"></div>
         <div class="field"><label>City</label><input type="text" id="createSiteCity"></div>
         <div class="field"><label>State</label><input type="text" id="createSiteState" placeholder="Texas (full name, not TX)"></div>
         <div class="field"><label>Zip</label><input type="text" id="createSiteZip"></div>
         <div class="field"><label>Country</label><input type="text" id="createSiteCountry" value="United States"></div>
-        <div class="field"><label>Timezone</label><input type="text" id="createSiteTimezone" value="America/Chicago"></div>
+        <div class="field">
+          <label>Timezone</label>
+          <select id="createSiteTimezone">
+            <option value="America/New_York">Eastern (America/New_York)</option>
+            <option value="America/Chicago" selected>Central (America/Chicago)</option>
+            <option value="America/Denver">Mountain (America/Denver)</option>
+            <option value="America/Phoenix">Mountain, no DST (America/Phoenix)</option>
+            <option value="America/Los_Angeles">Pacific (America/Los_Angeles)</option>
+            <option value="America/Anchorage">Alaska (America/Anchorage)</option>
+            <option value="Pacific/Honolulu">Hawaii (Pacific/Honolulu)</option>
+          </select>
+        </div>
         <button class="btn primary" id="createSiteBtn">Create Site</button>
         <div id="createSiteResult"></div>
       </div>
+    </section>
+
+    <section id="screen-tools" class="screen" hidden>
+      <h1 class="pagetitle">Tools</h1>
 
       <div class="card">
         <div class="card-title">Reset to Default</div>

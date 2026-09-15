@@ -105,9 +105,9 @@ def test_device_type_constants_cover_ap_switch_gateway():
     assert cc.DEVICE_TYPE_AP == "IAP"
     assert cc.DEVICE_TYPE_SWITCH == "SWITCH"
     # DEVICE_TYPE_GATEWAY is this project's own addition (not present in
-    # the sibling conversion project, which only ever handled APs) - an
-    # unverified judgment call, see the repo's README for the caveat.
-    assert cc.DEVICE_TYPE_GATEWAY == "CONTROLLER"
+    # the sibling conversion project, which only ever handled APs) -
+    # confirmed by the user 2026-09-15, not a guess.
+    assert cc.DEVICE_TYPE_GATEWAY == "GATEWAY"
 
 
 def test_token_manager_sends_refresh_token_grant():

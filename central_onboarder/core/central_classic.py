@@ -56,7 +56,7 @@ _MAX_PREPROVISION_SERIALS_PER_CALL = 50  # documented cap, see module docstring
 DEVICE_TYPE_AP = "IAP"
 DEVICE_TYPE_SWITCH = "SWITCH"
 DEVICE_TYPE_CONTROLLER = "CONTROLLER"
-DEVICE_TYPE_GATEWAY = "CONTROLLER"  # Aruba gateways are CONTROLLER-class in Classic Central's API
+DEVICE_TYPE_GATEWAY = "GATEWAY"  # confirmed by user 2026-09-15, not a CONTROLLER-class guess
 
 
 class ClassicAuthError(Exception):

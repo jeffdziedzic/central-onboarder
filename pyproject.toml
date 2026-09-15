@@ -1,6 +1,6 @@
 [project]
 name = "central-onboarder"
-version = "0.1.0"
+version = "0.3.0"
 description = "Central Onboarder - unofficial, unsupported field utility for onboarding new devices onto GLCP/New Central/Classic Central"
 requires-python = ">=3.11"
 dependencies = [

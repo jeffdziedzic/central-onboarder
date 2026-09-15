@@ -13,15 +13,21 @@ under a home-directory dotfile. /credentials.json is .gitignore'd;
 OneDrive sync of this directory is an accepted tradeoff, not something
 this module tries to route around.
 
-Three categories: `central` (New Central + GLCP OAuth, client_credentials
+Four categories: `central` (New Central + GLCP OAuth, client_credentials
 grant - no rotating token to persist, and reused for GLCP calls too, see
 core/central.py's module docstring), `classic` (Classic Central OAuth,
 refresh_token grant - needed for group pre-provisioning and site
 association), `ap_ssh` (fleet-wide admin credential for SSHing directly
 into a device - not wired to any feature yet in this tool, kept for
-possible future use). Deliberately does NOT carry the sibling project's
-`ssh` category (host-keyed controller/Mobility-Conductor credential) -
-this tool has no controller/conductor concept.
+possible future use), `uxi` (not a credential at all - just the GreenLake
+application_id/region for the UXI application, since UXI sensors are
+assigned to their own application rather than Central's, and unlike
+Central's, restore_central_assignment's auto-discovery has nothing to
+find it from until at least one UXI sensor has been assigned once - see
+core/central.py's restore_central_assignment docstring). Deliberately
+does NOT carry the sibling project's `ssh` category (host-keyed
+controller/Mobility-Conductor credential) - this tool has no
+controller/conductor concept.
 
 Plaintext JSON, not OS-keyring-backed - matches the sibling project's
 precedent, and this is a personal/unofficial single-operator tool, not
@@ -168,4 +174,16 @@ def set_ap_ssh_credential(
     if ap_ip is not None:
         entry["ap_ip"] = ap_ip
     data.setdefault("ap_ssh", {})[account] = entry
+    save(data, path)
+
+
+def get_uxi_application(path: Path | None = None) -> dict | None:
+    """One workspace-wide value, not account-keyed like central/classic -
+    a GreenLake workspace has (at most) one UXI application instance."""
+    return load(path).get("uxi")
+
+
+def set_uxi_application(application_id: str, region: str | None = None, path: Path | None = None) -> None:
+    data = load(path)
+    data["uxi"] = {"application_id": application_id, "region": region}
     save(data, path)

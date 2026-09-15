@@ -151,6 +151,10 @@ async function loadCredentials() {
     populateCard(card, apSsh[firstApSsh]);
     if (apSsh[firstApSsh].ap_ip) document.getElementById("apSshIp").value = apSsh[firstApSsh].ap_ip;
   }
+
+  if (data.uxi) {
+    populateCard(document.querySelector('.card[data-category="uxi"]'), data.uxi);
+  }
 }
 
 // --- hints -----------------------------------------------------------------
@@ -212,6 +216,8 @@ function wireSaveButtons() {
       } else if (category === "ap_ssh") {
         const apIp = document.getElementById("apSshIp").value.trim() || null;
         result = await api().save_ap_ssh(values.account, values.username, values.password, apIp);
+      } else if (category === "uxi") {
+        result = await api().save_uxi(values.application_id, values.region || null);
       }
       showSaveNote(card, result.ok, result.ok ? "Saved." : result.error);
     });
@@ -280,6 +286,34 @@ function wireWipeButtons() {
           showSaveNote(card, true, "Wiped.");
         }
       );
+    });
+  });
+}
+
+function wireListGlcpServices() {
+  document.getElementById("listGlcpServicesBtn").addEventListener("click", async () => {
+    const resultEl = document.getElementById("glcpServicesResult");
+    resultEl.innerHTML = '<p class="save-note">Looking up...</p>';
+    const result = await api().list_glcp_services();
+    if (!result.ok) {
+      resultEl.innerHTML = `<p class="save-note error">${result.error}</p>`;
+      return;
+    }
+    if (!result.services.length) {
+      resultEl.innerHTML = '<p class="save-note">No services found in this workspace.</p>';
+      return;
+    }
+    resultEl.innerHTML = "";
+    result.services.forEach((svc) => {
+      const row = document.createElement("button");
+      row.className = "link-btn";
+      row.style.display = "block";
+      row.style.margin = "4px 0";
+      row.textContent = `${svc.name || "(unnamed)"} - ${svc.id}`;
+      row.addEventListener("click", () => {
+        document.querySelector('.card[data-category="uxi"] [data-field="application_id"]').value = svc.id;
+      });
+      resultEl.appendChild(row);
     });
   });
 }
@@ -356,7 +390,6 @@ async function loadDevices() {
   result.devices.forEach((d) => {
     const tr = document.createElement("tr");
     tr.innerHTML =
-      `<td class="chk-col"><input type="checkbox" data-serial="${d.serial}"></td>` +
       `<td>${d.serial}</td><td>${d.mac || ""}</td><td>${d.device_type || ""}</td>` +
       `<td>${d.target_group || ""}</td><td>${d.target_site || ""}</td><td>${d.subscription_key || ""}</td>` +
       `<td class="tick">${tick(d.added_to_glcp)}</td><td class="tick">${tick(d.subscription_assigned)}</td>` +
@@ -459,11 +492,17 @@ function wireRunOnboardBatch() {
       resultEl.innerHTML = `<p class="save-note error">${result.error}</p>`;
       return;
     }
-    let html = `<p class="save-note ok">Processed ${result.processed} device(s).</p>`;
-    if (result.missing_mac && result.missing_mac.length) {
-      html += `<p class="save-note error">Skipped (no MAC): ${result.missing_mac.join(", ")}</p>`;
+    let html = "";
+    if (result.add_device.missing_mac && result.add_device.missing_mac.length) {
+      html += `<p class="save-note error">Skipped (no MAC): ${result.add_device.missing_mac.join(", ")}</p>`;
     }
-    html += `<div class="result-block">${renderResultsBlock(resultEl, "Add to GLCP", result.add_device)}\n\n${renderResultsBlock(resultEl, "Assign Service", result.service)}${result.subscription ? "\n\n" + renderResultsBlock(resultEl, "Assign Subscription", result.subscription) : ""}</div>`;
+    html += `<div class="result-block">${renderResultsBlock(resultEl, "Add to GLCP", result.add_device)}\n\n${renderResultsBlock(resultEl, "Assign Service", result.service)}\n\n${renderResultsBlock(resultEl, "Assign Subscription", result.subscription)}</div>`;
+    const pp = result.preprovision;
+    if (pp) {
+      html += pp.skipped
+        ? `<p class="save-note">Pre-Provision skipped: ${pp.skipped}</p>`
+        : `<p class="save-note ${pp.failed ? "error" : "ok"}">Pre-Provision: provisioned ${pp.provisioned}, failed ${pp.failed}.</p>`;
+    }
     resultEl.innerHTML = html;
     loadWorkspace();
     loadDevices();
@@ -474,17 +513,54 @@ function parseIdentifiers(value) {
   return value.split(",").map((s) => s.trim()).filter(Boolean);
 }
 
+function wireManualAddToGlcp() {
+  document.getElementById("manualAddToGlcpBtn").addEventListener("click", async () => {
+    const resultEl = document.getElementById("manualGlcpResult");
+    const pullFromCsv = document.getElementById("manualGlcpPullFromCsv").checked;
+
+    let result;
+    if (pullFromCsv) {
+      resultEl.textContent = "Running...";
+      result = await api().run_add_to_glcp();
+    } else {
+      const serials = parseIdentifiers(document.getElementById("manualGlcpSerials").value);
+      const macs = parseIdentifiers(document.getElementById("manualGlcpMacs").value);
+      if (!serials.length || !macs.length) {
+        resultEl.innerHTML = '<p class="save-note error">Serial(s) and MAC(s) are required.</p>';
+        return;
+      }
+      result = await api().add_devices_to_glcp(serials, macs);
+    }
+
+    resultEl.innerHTML = result.error
+      ? `<p class="save-note error">${result.error}</p>`
+      : `<div class="result-block">${renderResultsBlock(resultEl, "Add to GLCP", result)}</div>`;
+    loadDevices();
+  });
+}
+
 function wireManualSubscription() {
   document.getElementById("manualAssignSubBtn").addEventListener("click", async () => {
-    const identifiers = parseIdentifiers(document.getElementById("manualSubIdentifiers").value);
-    const key = document.getElementById("manualSubKey").value.trim();
     const resultEl = document.getElementById("manualSubResult");
-    if (!identifiers.length || !key) {
-      resultEl.innerHTML = '<p class="save-note error">Serial(s)/MAC(s) and Subscription Key are required.</p>';
-      return;
+    const pullFromCsv = document.getElementById("manualSubPullFromCsv").checked;
+
+    let result;
+    if (pullFromCsv) {
+      resultEl.textContent = "Running...";
+      result = await api().run_assign_subscription();
+    } else {
+      const identifiers = parseIdentifiers(document.getElementById("manualSubIdentifiers").value);
+      const key = document.getElementById("manualSubKey").value.trim();
+      if (!identifiers.length || !key) {
+        resultEl.innerHTML = '<p class="save-note error">Serial(s)/MAC(s) and Subscription Key are required.</p>';
+        return;
+      }
+      result = await api().assign_subscription(identifiers, key);
     }
-    const result = await api().assign_subscription(identifiers, key);
-    resultEl.innerHTML = `<div class="result-block">${renderResultsBlock(resultEl, "Assign Subscription", result)}</div>`;
+
+    resultEl.innerHTML = result.error
+      ? `<p class="save-note error">${result.error}</p>`
+      : `<div class="result-block">${renderResultsBlock(resultEl, "Assign Subscription", result)}</div>`;
     loadDevices();
   });
 
@@ -503,81 +579,156 @@ function wireManualSubscription() {
 
 function wireManualService() {
   document.getElementById("manualAssignServiceBtn").addEventListener("click", async () => {
+    const resultEl = document.getElementById("manualServiceResult");
+    const pullFromCsv = document.getElementById("manualServicePullFromCsv").checked;
+
+    let result;
+    if (pullFromCsv) {
+      resultEl.textContent = "Running...";
+      result = await api().run_assign_service();
+    } else {
+      const identifiers = parseIdentifiers(document.getElementById("manualServiceIdentifiers").value);
+      const appId = document.getElementById("manualServiceAppId").value.trim() || null;
+      if (!identifiers.length) {
+        resultEl.innerHTML = '<p class="save-note error">Serial(s)/MAC(s) are required.</p>';
+        return;
+      }
+      result = await api().assign_service(identifiers, appId);
+    }
+
+    resultEl.innerHTML = result.error
+      ? `<p class="save-note error">${result.error}</p>`
+      : `<div class="result-block">${renderResultsBlock(resultEl, "Assign Service", result)}</div>`;
+    loadDevices();
+  });
+
+  document.getElementById("manualRemoveServiceBtn").addEventListener("click", async () => {
     const identifiers = parseIdentifiers(document.getElementById("manualServiceIdentifiers").value);
-    const appId = document.getElementById("manualServiceAppId").value.trim() || null;
     const resultEl = document.getElementById("manualServiceResult");
     if (!identifiers.length) {
       resultEl.innerHTML = '<p class="save-note error">Serial(s)/MAC(s) are required.</p>';
       return;
     }
-    const result = await api().assign_service(identifiers, appId);
-    resultEl.innerHTML = `<div class="result-block">${renderResultsBlock(resultEl, "Assign Service", result)}</div>`;
+    const result = await api().remove_service(identifiers);
+    resultEl.innerHTML = `<div class="result-block">${renderResultsBlock(resultEl, "Remove Service", result)}</div>`;
     loadDevices();
   });
 }
 
 // --- pre-provision ---------------------------------------------------------
 
-function wireRunPreprovision() {
-  document.getElementById("runPreprovisionBtn").addEventListener("click", async () => {
-    const resultEl = document.getElementById("preprovisionResult");
-    resultEl.textContent = "Running...";
-    const result = await api().preprovision();
-    if (!result.ok && result.error) {
-      resultEl.innerHTML = `<p class="save-note error">${result.error}</p>`;
-      return;
+function wireManualPreprovision() {
+  document.getElementById("manualPreprovisionBtn").addEventListener("click", async () => {
+    const resultEl = document.getElementById("manualPreprovisionResult");
+    const pullFromCsv = document.getElementById("manualPreprovisionPullFromCsv").checked;
+
+    let result;
+    if (pullFromCsv) {
+      resultEl.textContent = "Running...";
+      result = await api().preprovision();
+    } else {
+      const identifiers = parseIdentifiers(document.getElementById("manualPreprovisionIdentifiers").value);
+      const group = document.getElementById("manualPreprovisionGroup").value.trim();
+      if (!identifiers.length || !group) {
+        resultEl.innerHTML = '<p class="save-note error">Serial(s)/MAC(s) and Group are required.</p>';
+        return;
+      }
+      result = await api().preprovision_manual(identifiers, group);
     }
-    resultEl.innerHTML = `<p class="save-note ${result.failed ? "error" : "ok"}">Provisioned ${result.provisioned}, failed ${result.failed}.</p>`;
+
+    resultEl.innerHTML = result.error
+      ? `<p class="save-note error">${result.error}</p>`
+      : `<p class="save-note ${result.failed ? "error" : "ok"}">Provisioned ${result.provisioned}, failed ${result.failed}.</p>`;
     loadDevices();
   });
 }
 
 function wireCheckStatus() {
-  document.getElementById("checkDeviceGroupBtn").addEventListener("click", async () => {
-    const serial = document.getElementById("checkStatusSerial").value.trim();
+  document.getElementById("checkFullStatusBtn").addEventListener("click", async () => {
+    const identifier = document.getElementById("checkStatusSerial").value.trim();
     const resultEl = document.getElementById("checkStatusResult");
-    if (!serial) return;
-    const result = await api().check_device_group(serial);
-    resultEl.innerHTML = result.ok
-      ? `<p class="save-note">Group: ${result.group || "(none)"}</p>`
-      : `<p class="save-note error">${result.error}</p>`;
-  });
-
-  document.getElementById("checkApStatusBtn").addEventListener("click", async () => {
-    const serial = document.getElementById("checkStatusSerial").value.trim();
-    const resultEl = document.getElementById("checkStatusResult");
-    if (!serial) return;
-    const result = await api().check_ap_status(serial);
+    if (!identifier) return;
+    resultEl.textContent = "Checking...";
+    const result = await api().check_full_status(identifier);
     if (!result.ok) {
       resultEl.innerHTML = `<p class="save-note error">${result.error}</p>`;
       return;
     }
-    resultEl.innerHTML = result.seen
-      ? `<p class="save-note">Status: ${result.status}, Group: ${result.group_name || "(none)"}, Site: ${result.site_name || "(none)"}, Firmware: ${result.firmware_version || "(unknown)"}</p>`
-      : `<p class="save-note">Not seen yet - hasn't checked into Central.</p>`;
+    const g = result.glcp || {};
+    const c = result.classic || {};
+    let glcpLine;
+    if (g.skipped) glcpLine = `GLCP: skipped (${g.skipped})`;
+    else if (g.error) glcpLine = `GLCP: error (${g.error})`;
+    else if (!g.in_glcp) glcpLine = "GLCP: not added";
+    else {
+      const sub = g.subscription_tier ? `${g.subscription_tier}${g.subscription_end ? " until " + g.subscription_end : ""}` : "(none)";
+      glcpLine = `GLCP: added, Service: ${g.service_assigned ? "assigned" : "not assigned"}, Subscription: ${sub}`;
+    }
+    let classicLine;
+    if (c.skipped) classicLine = `Classic Central: skipped (${c.skipped})`;
+    else if (c.error) classicLine = `Classic Central: error (${c.error})`;
+    else if (!c.checked_in) classicLine = "Classic Central: not seen yet - hasn't checked into Central";
+    else classicLine = `Classic Central: Status ${c.status}, Group: ${c.group || "(none)"}, Site: ${c.site || "(none)"}`;
+    resultEl.innerHTML = `<p class="save-note">${glcpLine}</p><p class="save-note">${classicLine}</p>`;
   });
 }
 
 // --- assign site -------------------------------------------------------
 
-function wireRunAssignSite() {
-  document.getElementById("runAssignSiteBtn").addEventListener("click", async () => {
-    const resultEl = document.getElementById("assignSiteResult");
-    resultEl.textContent = "Running...";
-    const result = await api().assign_site();
-    if (!result.ok && result.error) {
+function renderAssignSiteResult(resultEl, result) {
+  if (result.error) {
+    resultEl.innerHTML = `<p class="save-note error">${result.error}</p>`;
+    return;
+  }
+  let html = `<p class="save-note ${result.failed ? "error" : "ok"}">Assigned ${result.assigned}, failed ${result.failed}.</p>`;
+  if (result.unresolved_sites && result.unresolved_sites.length) {
+    html += `<p class="save-note error">Site name(s) not found in Classic Central: ${result.unresolved_sites.join(", ")}</p>`;
+  }
+  if (result.unrecognized_types && result.unrecognized_types.length) {
+    html += `<p class="save-note error">Device Type not recognized (must be AP/Switch/Gateway): ${result.unrecognized_types.join(", ")}</p>`;
+  }
+  resultEl.innerHTML = html;
+}
+
+function wireManualAssignSite() {
+  document.getElementById("manualAssignSiteBtn").addEventListener("click", async () => {
+    const resultEl = document.getElementById("manualAssignSiteResult");
+    const pullFromCsv = document.getElementById("manualSitePullFromCsv").checked;
+
+    let result;
+    if (pullFromCsv) {
+      resultEl.textContent = "Running...";
+      result = await api().assign_site();
+    } else {
+      const identifiers = parseIdentifiers(document.getElementById("manualSiteSerials").value);
+      const deviceType = document.getElementById("manualSiteDeviceType").value;
+      const siteName = document.getElementById("manualSiteName").value.trim();
+      if (!identifiers.length || !siteName) {
+        resultEl.innerHTML = '<p class="save-note error">Serial(s) and Site Name are required.</p>';
+        return;
+      }
+      result = await api().assign_site_manual(identifiers, deviceType, siteName);
+    }
+
+    renderAssignSiteResult(resultEl, result);
+    loadDevices();
+  });
+
+  document.getElementById("pullClassicSitesBtn").addEventListener("click", async () => {
+    const resultEl = document.getElementById("manualAssignSiteResult");
+    const result = await api().get_classic_sites();
+    if (!result.ok) {
       resultEl.innerHTML = `<p class="save-note error">${result.error}</p>`;
       return;
     }
-    let html = `<p class="save-note ${result.failed ? "error" : "ok"}">Assigned ${result.assigned}, failed ${result.failed}.</p>`;
-    if (result.unresolved_sites && result.unresolved_sites.length) {
-      html += `<p class="save-note error">Site name(s) not found in Classic Central: ${result.unresolved_sites.join(", ")}</p>`;
-    }
-    if (result.unrecognized_types && result.unrecognized_types.length) {
-      html += `<p class="save-note error">Device Type not recognized (must be AP/Switch/Gateway): ${result.unrecognized_types.join(", ")}</p>`;
-    }
-    resultEl.innerHTML = html;
-    loadDevices();
+    const datalist = document.getElementById("manualSiteOptions");
+    datalist.innerHTML = "";
+    result.sites.forEach((name) => {
+      const option = document.createElement("option");
+      option.value = name;
+      datalist.appendChild(option);
+    });
+    resultEl.innerHTML = `<p class="save-note ok">Pulled ${result.sites.length} site(s) from Classic Central.</p>`;
   });
 }
 
@@ -633,6 +784,7 @@ async function init() {
   wireTestAll();
   wireTestButtons();
   wireWipeButtons();
+  wireListGlcpServices();
   wireWipeAllCredentials();
   wireConfirmModal();
   wireRefreshDevices();
@@ -641,11 +793,12 @@ async function init() {
   wireImportCsv();
   wireLoadDestinations();
   wireRunOnboardBatch();
+  wireManualAddToGlcp();
   wireManualSubscription();
   wireManualService();
-  wireRunPreprovision();
+  wireManualPreprovision();
   wireCheckStatus();
-  wireRunAssignSite();
+  wireManualAssignSite();
   wireCreateSite();
   wireResetToDefault();
 

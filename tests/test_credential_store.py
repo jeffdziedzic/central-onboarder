@@ -82,6 +82,19 @@ def test_clear_all(tmp_path: Path):
     assert cs.load(path) == {}
 
 
+def test_uxi_application_round_trip(tmp_path: Path):
+    path = tmp_path / "credentials.json"
+    assert cs.get_uxi_application(path=path) is None
+    cs.set_uxi_application("app-123", region="us-west", path=path)
+    assert cs.get_uxi_application(path=path) == {"application_id": "app-123", "region": "us-west"}
+
+
+def test_uxi_application_region_optional(tmp_path: Path):
+    path = tmp_path / "credentials.json"
+    cs.set_uxi_application("app-123", path=path)
+    assert cs.get_uxi_application(path=path) == {"application_id": "app-123", "region": None}
+
+
 def test_no_ssh_category_exists():
     """This tool has no controller/conductor SSH concept - unlike the
     sibling AOS8-to-AOS10 Conversion Tool project, there's deliberately

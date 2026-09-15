@@ -16,9 +16,13 @@ in new/changed rows and writes it straight back out.
 'Devices' columns (1-indexed):
   1  Serial               operator-entered (key)
   2  MAC                  operator-entered
-  3  Device Type          operator-entered - AP / Switch / Gateway (UXI
-                           reserved for a future release, not offered
-                           yet - see project README)
+  3  Device Type          operator-entered - AP / Switch / Gateway / UXI.
+                           UXI rows skip Target Group/Target Site
+                           entirely (pre-provisioning and New Central
+                           site assignment are Central-only concepts -
+                           UXI sensors live under their own GLCP
+                           application, not Central) - Onboard's GLCP
+                           add/subscription/service steps still apply.
   4  Target Group         operator-entered - Classic Central group to
                            pre-provision into
   5  Target Site          operator-entered - New Central site to
@@ -97,7 +101,7 @@ TRACKING_COLUMNS = (
     COL_PREPROVISIONED, COL_SITE_ASSIGNED,
 )
 
-DEVICE_TYPES = ("AP", "Switch", "Gateway")  # UXI deferred - see module docstring
+DEVICE_TYPES = ("AP", "Switch", "Gateway", "UXI")
 
 EXPECTED_DEVICES_HEADERS = (
     "Serial", "MAC", "Device Type", "Target Group", "Target Site", "Subscription Key",

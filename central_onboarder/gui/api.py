@@ -167,6 +167,37 @@ class Api:
         credential_store.set_ap_ssh_credential(account, username, password, ap_ip=ap_ip)
         return {"ok": True}
 
+    def save_uxi(self, application_id: str, region: str | None = None) -> dict:
+        """Not a credential - the GreenLake application_id (and its
+        region) for the UXI application, used by run_onboard_batch/
+        assign_service for UXI rows since restore_central_assignment's
+        auto-discovery has nothing to find it from in a workspace where
+        no UXI sensor has ever been assigned yet."""
+        if not application_id:
+            return {"ok": False, "error": "Application ID is required."}
+        credential_store.set_uxi_application(application_id, region or None)
+        return {"ok": True}
+
+    def list_glcp_services(self) -> dict:
+        """Look-up-from-GLCP for the UXI Application card - lists every
+        service instance provisioned in the workspace (id + name), so
+        the operator can find e.g. "HPE Aruba Networking UXI"'s id
+        directly rather than needing an already-assigned UXI device to
+        read it off of. See core/central.list_service_managers for the
+        not-yet-confirmed-against-a-real-tenant caveat on this endpoint."""
+        creds = self._glp_creds()
+        if creds is None:
+            return {"ok": False, "error": "No New Central credentials stored - add one in Credentials first."}
+        client_id, client_secret = creds
+        transcript = Transcript(prefix="gui-list-glcp-services")
+        client = central.CentralClient(central.GLP_BASE_URL, client_id, client_secret, transcript=transcript)
+        try:
+            items = central.list_service_managers(client)
+        except (central.CentralAuthError, central.CentralAPIError) as exc:
+            return {"ok": False, "error": str(exc)}
+        services = [{"id": i.get("id"), "name": i.get("name")} for i in items if i.get("id")]
+        return {"ok": True, "services": services}
+
     def test_central(self, account: str) -> dict:
         entry = credential_store.get_central_account(account) if account else None
         if entry is None:
@@ -558,74 +589,220 @@ class Api:
             sheet_module.mark_service_assigned(sheet_path, ok_serials)
         return self._results_dict(results)
 
-    def run_onboard_batch(self) -> dict:
-        """Runs Add to GLCP -> Assign Subscription -> Assign Service for
-        every working-sheet row not yet marked Added to GLCP, using each
-        row's own MAC/Subscription Key. Each step runs independently for
-        a device, not gated on a previous step's success - a device
-        already present in GLCP should still get its subscription/
-        service steps attempted."""
-        sheet_path = workspace.get_sheet()
-        if sheet_path is None:
-            return {"ok": False, "error": "No working device list set."}
+    def remove_service(self, identifiers: list[str]) -> dict:
+        """Detaches device(s) from the Central application in GreenLake
+        (core.central.unassign_from_greenlake) - the reverse of
+        assign_service above. Same as remove_subscription_key: doesn't
+        touch the working sheet's Service Assigned tracking column, it
+        only reflects what run_onboard_batch/assign_service have done."""
+        creds = self._glp_creds()
+        if creds is None:
+            return {"ok": False, "error": "No New Central credentials stored - add one in Credentials first."}
+        client_id, client_secret = creds
+        transcript = Transcript(prefix="gui-remove-service")
+        client = central.CentralClient(central.GLP_BASE_URL, client_id, client_secret, transcript=transcript)
+        try:
+            results = central.unassign_from_greenlake(client, identifiers)
+        except central.CentralAuthError as exc:
+            return {"ok": False, "error": str(exc)}
+        return self._results_dict(results)
+
+    # --- Sheet-driven ("Run X"/checked "Pull from Device List") steps -----
+    #
+    # Each of these has the same shape as _run_preprovision below (the
+    # original of this pattern): a private _run_X(sheet_path) that reads
+    # the CURRENT working sheet and acts on whatever's eligible by that
+    # row's OWN values (not an explicit caller-supplied list - that's
+    # what the plain add_devices_to_glcp/assign_subscription/
+    # assign_service methods above are for), plus a public run_X()
+    # wrapper that resolves the working sheet path. run_onboard_batch
+    # composes all four; each Manual card's "Pull from Device List"
+    # checkbox calls its matching run_X() directly (2026-09-15 - the
+    # checkbox used to just copy serials into the manual field, which
+    # silently dropped each row's own group/site/key and didn't skip
+    # already-done rows the way these do).
+
+    def _run_add_to_glcp(self, sheet_path) -> dict:
+        """Adds every row not yet marked Added to GLCP (and with a MAC
+        set - add_devices_to_glcp needs both) to GLCP, using each row's
+        own serial/MAC."""
         rows = sheet_module.read_devices(sheet_path)
         pending = [r for r in rows if not r.added_to_glcp]
-        if not pending:
-            return {"ok": True, "processed": 0, "add_device": None, "subscription": None, "service": None}
+        missing_mac = [r.serial for r in pending if not r.mac]
+        with_mac = [r for r in pending if r.mac]
+        if not with_mac:
+            return {"ok": True, "results": [], "missing_mac": missing_mac}
 
         creds = self._glp_creds()
         if creds is None:
             return {"ok": False, "error": "No New Central credentials stored - add one in Credentials first."}
         client_id, client_secret = creds
-        transcript = Transcript(prefix="gui-run-onboard-batch")
+        transcript = Transcript(prefix="gui-run-add-to-glcp")
+        client = central.CentralClient(central.GLP_BASE_URL, client_id, client_secret, transcript=transcript)
+        try:
+            results = central.add_devices_to_glcp(client, [(r.serial, r.mac) for r in with_mac])
+        except central.CentralAuthError as exc:
+            return {"ok": False, "error": str(exc)}
+        ok_serials = [r.serial for r in results if r.ok]
+        if ok_serials:
+            sheet_module.mark_added_to_glcp(sheet_path, ok_serials)
+        out = self._results_dict(results)
+        out["missing_mac"] = missing_mac
+        return out
+
+    def run_add_to_glcp(self) -> dict:
+        sheet_path = workspace.get_sheet()
+        if sheet_path is None:
+            return {"ok": False, "error": "No working device list set."}
+        return self._run_add_to_glcp(sheet_path)
+
+    def _run_assign_service(self, sheet_path) -> dict:
+        """Assigns every row not yet marked Service Assigned, split by
+        each row's own Device Type - UXI rows get the stored UXI
+        application (credential_store's uxi entry), everything else
+        auto-discovers Central's, same split run_onboard_batch always
+        used. Split out (not just one restore_central_assignment call
+        for everyone) so a mixed AP+UXI batch never has UXI rows
+        accidentally grab Central's auto-discovered application_id -
+        restore_central_assignment's auto-discovery just grabs ANY
+        already-assigned device's id, it doesn't know about "UXI vs
+        Central" on its own."""
+        rows = sheet_module.read_devices(sheet_path)
+        pending = [r for r in rows if not r.service_assigned]
+        if not pending:
+            return {"ok": True, "results": []}
+
+        creds = self._glp_creds()
+        if creds is None:
+            return {"ok": False, "error": "No New Central credentials stored - add one in Credentials first."}
+        client_id, client_secret = creds
+        transcript = Transcript(prefix="gui-run-assign-service")
         client = central.CentralClient(central.GLP_BASE_URL, client_id, client_secret, transcript=transcript)
 
-        missing_mac = [r.serial for r in pending if not r.mac]
-        with_mac = [r for r in pending if r.mac]
-
+        uxi_serials = [r.serial for r in pending if r.device_type == "UXI"]
+        central_serials = [r.serial for r in pending if r.device_type != "UXI"]
+        results: list = []
         try:
-            add_results = central.add_devices_to_glcp(client, [(r.serial, r.mac) for r in with_mac])
-            identifiers = [r.serial for r in with_mac]
-            assignment_results = central.restore_central_assignment(client, identifiers, None, None)
-            by_key: dict[str, list] = {}
-            for r in with_mac:
-                by_key.setdefault(r.subscription_key or "", []).append(r.serial)
-            subscription_results = []
-            for key, serials in by_key.items():
-                if not key:
-                    continue
-                subscription_results.extend(central.assign_subscription(client, serials, key))
+            if central_serials:
+                results.extend(central.restore_central_assignment(client, central_serials, None, None))
+            if uxi_serials:
+                uxi_app = credential_store.get_uxi_application()
+                if uxi_app is None:
+                    results.extend(
+                        central.UnassignResult(s, False, "No UXI application_id stored - set it in Credentials first.")
+                        for s in uxi_serials
+                    )
+                else:
+                    results.extend(
+                        central.restore_central_assignment(
+                            client, uxi_serials, uxi_app["application_id"], uxi_app.get("region")
+                        )
+                    )
         except central.CentralAuthError as exc:
             return {"ok": False, "error": str(exc)}
 
-        for label, results, marker in (
-            ("add_device", add_results, sheet_module.mark_added_to_glcp),
-            ("assignment", assignment_results, sheet_module.mark_service_assigned),
-            ("subscription", subscription_results, sheet_module.mark_subscription_assigned),
-        ):
-            ok_serials = [r.serial for r in results if r.ok]
-            if ok_serials:
-                marker(sheet_path, ok_serials)
+        ok_serials = [r.serial for r in results if r.ok]
+        if ok_serials:
+            sheet_module.mark_service_assigned(sheet_path, ok_serials)
+        return self._results_dict(results)
+
+    def run_assign_service(self) -> dict:
+        sheet_path = workspace.get_sheet()
+        if sheet_path is None:
+            return {"ok": False, "error": "No working device list set."}
+        return self._run_assign_service(sheet_path)
+
+    def _run_assign_subscription(self, sheet_path) -> dict:
+        """Assigns every row with a Subscription Key set and not yet
+        marked Subscription Assigned, grouped by each row's own key
+        (one assign_subscription call per distinct key, not per row)."""
+        rows = sheet_module.read_devices(sheet_path)
+        by_key: dict[str, list[str]] = {}
+        for r in rows:
+            if r.subscription_key and not r.subscription_assigned:
+                by_key.setdefault(r.subscription_key, []).append(r.serial)
+        if not by_key:
+            return {"ok": True, "results": []}
+
+        creds = self._glp_creds()
+        if creds is None:
+            return {"ok": False, "error": "No New Central credentials stored - add one in Credentials first."}
+        client_id, client_secret = creds
+        transcript = Transcript(prefix="gui-run-assign-subscription")
+        client = central.CentralClient(central.GLP_BASE_URL, client_id, client_secret, transcript=transcript)
+        try:
+            results = []
+            for key, serials in by_key.items():
+                results.extend(central.assign_subscription(client, serials, key))
+        except central.CentralAuthError as exc:
+            return {"ok": False, "error": str(exc)}
+
+        ok_serials = [r.serial for r in results if r.ok]
+        if ok_serials:
+            sheet_module.mark_subscription_assigned(sheet_path, ok_serials)
+        return self._results_dict(results)
+
+    def run_assign_subscription(self) -> dict:
+        sheet_path = workspace.get_sheet()
+        if sheet_path is None:
+            return {"ok": False, "error": "No working device list set."}
+        return self._run_assign_subscription(sheet_path)
+
+    def run_onboard_batch(self) -> dict:
+        """Runs Add to GLCP -> Assign Service -> Assign Subscription ->
+        Pre-Provision, each step against the CURRENT working sheet (see
+        the _run_X methods above/_run_preprovision below) - every step
+        is independent, gated only on its own tracking column, not on a
+        previous step's success or on whether THIS run's Add to GLCP
+        touched a given row: a row already added to GLCP in an earlier
+        run still gets picked up here if it's still missing its
+        service/subscription/group. Pre-provisioning is skipped (not
+        failed) when no Classic Central credentials are stored, since
+        GLCP-side onboarding shouldn't be blocked on a platform this
+        workspace may not use yet."""
+        sheet_path = workspace.get_sheet()
+        if sheet_path is None:
+            return {"ok": False, "error": "No working device list set."}
+
+        add_result = self._run_add_to_glcp(sheet_path)
+        if not add_result.get("ok") and "error" in add_result:
+            return add_result
+        service_result = self._run_assign_service(sheet_path)
+        if not service_result.get("ok") and "error" in service_result:
+            return service_result
+        subscription_result = self._run_assign_subscription(sheet_path)
+        if not subscription_result.get("ok") and "error" in subscription_result:
+            return subscription_result
+
+        preprov_result = self._run_preprovision(sheet_path)
+        if not preprov_result.get("ok") and "error" in preprov_result:
+            # Missing Classic Central creds shouldn't fail a batch whose
+            # GLCP-side steps may have already succeeded - surface it as
+            # a skip, not a batch failure.
+            preprov_result = {"ok": True, "provisioned": 0, "failed": 0, "skipped": preprov_result["error"]}
 
         return {
             "ok": True,
-            "processed": len(with_mac),
-            "missing_mac": missing_mac,
-            "add_device": self._results_dict(add_results),
-            "service": self._results_dict(assignment_results),
-            "subscription": self._results_dict(subscription_results) if subscription_results else None,
+            "add_device": add_result,
+            "service": service_result,
+            "subscription": subscription_result,
+            "preprovision": preprov_result,
         }
 
     # --- Pre-provision (Classic Central group) -----------------------------
 
-    def preprovision(self) -> dict:
-        """Assigns every working-sheet row with a Target Group set and
-        not yet marked Preprovisioned to that group in Classic Central,
-        via central_classic.preprovision_device_to_group (batches of up
-        to 50 serials per group)."""
-        sheet_path = workspace.get_sheet()
-        if sheet_path is None:
-            return {"ok": False, "error": "No working device list set."}
+    def _run_preprovision(self, sheet_path) -> dict:
+        """Shared by preprovision() (standalone re-run) and
+        run_onboard_batch() above. Assigns every working-sheet row with
+        a Target Group set and not yet marked Preprovisioned to that
+        group in Classic Central, via
+        central_classic.preprovision_device_to_group (batches of up to
+        50 serials per group). Returns {"ok": False, "error": "..."}
+        when no Classic Central credentials are stored, same as every
+        other creds-gated method here - run_onboard_batch (the only
+        caller besides the standalone preprovision() below) downgrades
+        that specific case to a non-fatal "skipped" note rather than
+        failing the whole batch."""
         rows = sheet_module.read_devices(sheet_path)
         by_group: dict[str, list[str]] = {}
         for r in rows:
@@ -655,33 +832,114 @@ class Api:
             sheet_module.mark_preprovisioned(sheet_path, provisioned)
         return {"ok": failed == 0, "provisioned": len(provisioned), "failed": failed}
 
-    def check_device_group(self, serial: str) -> dict:
-        transcript = Transcript(prefix="gui-check-device-group")
-        classic_client, error = self._classic_client(transcript=transcript)
-        if error:
-            return {"ok": False, "error": error}
-        try:
-            group = central_classic.get_device_group(classic_client, serial)
-        except (central_classic.ClassicAuthError, central_classic.ClassicAPIError) as exc:
-            return {"ok": False, "error": str(exc)}
-        return {"ok": True, "group": group}
+    def preprovision(self) -> dict:
+        """Standalone re-run of the pre-provision step alone (e.g. to
+        retry rows that failed, without re-running the GLCP steps)."""
+        sheet_path = workspace.get_sheet()
+        if sheet_path is None:
+            return {"ok": False, "error": "No working device list set."}
+        return self._run_preprovision(sheet_path)
 
-    def check_ap_status(self, serial: str) -> dict:
-        """Despite the name (Classic Central's own endpoint name - see
-        core/central_classic.py), this works for any onboarded device
-        type, not just APs."""
-        transcript = Transcript(prefix="gui-check-status")
+    def preprovision_manual(self, identifiers: list[str], group: str) -> dict:
+        """Manual, single-shot counterpart to preprovision()/
+        run_onboard_batch's pre-provision step - assigns an explicit
+        list of identifiers to an explicit group, for devices not
+        tracked in the working sheet at all. NOTE: Classic Central's
+        /configuration/v1/devices/move endpoint (preprovision_device_to_
+        group) is documented as taking serial numbers specifically -
+        unlike the GLCP-side manual cards above, a MAC address here is
+        unverified and may be rejected by the API."""
+        if not identifiers or not group:
+            return {"ok": False, "error": "Serial(s)/MAC(s) and Group are required."}
+        transcript = Transcript(prefix="gui-preprovision-manual")
         classic_client, error = self._classic_client(transcript=transcript)
         if error:
             return {"ok": False, "error": error}
+
+        provisioned: list[str] = []
+        failed = 0
+        for i in range(0, len(identifiers), _PREPROVISION_CHUNK_SIZE):
+            chunk = identifiers[i:i + _PREPROVISION_CHUNK_SIZE]
+            try:
+                central_classic.preprovision_device_to_group(classic_client, group, chunk)
+            except central_classic.ClassicAPIError:
+                failed += len(chunk)
+                continue
+            provisioned.extend(chunk)
+
+        sheet_path = workspace.get_sheet()
+        if provisioned and sheet_path is not None:
+            sheet_module.mark_preprovisioned(sheet_path, provisioned)
+        return {"ok": failed == 0, "provisioned": len(provisioned), "failed": failed}
+
+    def check_full_status(self, identifier: str) -> dict:
+        """Check Status card's real answer - identifier may be a serial
+        OR a MAC. Looks up state across both platforms this tool
+        touches: GLCP/New Central (device presence, service/application
+        assignment, subscription) via list_glp_devices, then Classic
+        Central (pre-provisioned group, site, check-in status) via
+        get_ap_status. The Classic Central endpoint is serial-keyed, so
+        a MAC identifier is resolved to its serial from the GLCP match
+        first - if the device isn't in GLCP yet (or no New Central
+        creds are stored), a MAC input can't be resolved and the
+        Classic Central section is skipped rather than guessed at."""
+        identifier = identifier.strip()
+        if not identifier:
+            return {"ok": False, "error": "Serial or MAC is required."}
+        mac = central.normalize_mac(identifier)
+        is_mac_input = mac is not None
+        serial = None if is_mac_input else identifier
+
+        result: dict = {"ok": True, "identifier": identifier}
+
+        creds = self._glp_creds()
+        if creds is None:
+            result["glcp"] = {"skipped": "No New Central credentials stored."}
+        else:
+            client_id, client_secret = creds
+            transcript = Transcript(prefix="gui-check-status-glcp")
+            client = central.CentralClient(central.GLP_BASE_URL, client_id, client_secret, transcript=transcript)
+            try:
+                devices = central.list_glp_devices(client)
+            except (central.CentralAuthError, central.CentralAPIError) as exc:
+                result["glcp"] = {"error": str(exc)}
+            else:
+                match = next(
+                    (d for d in devices if d.serial == identifier or (mac and d.mac_address == mac)), None
+                )
+                if match is None:
+                    result["glcp"] = {"in_glcp": False}
+                else:
+                    serial = match.serial
+                    result["glcp"] = {
+                        "in_glcp": True,
+                        "mac": match.mac_address,
+                        "service_assigned": bool(match.application_id),
+                        "subscription_tier": match.subscription_tier,
+                        "subscription_end": match.subscription_end,
+                    }
+
+        if serial is None:
+            result["classic"] = {"skipped": "Device not found in GLCP - can't resolve a serial from this MAC."}
+            return result
+
+        transcript = Transcript(prefix="gui-check-status-classic")
+        classic_client, error = self._classic_client(transcript=transcript)
+        if error:
+            result["classic"] = {"skipped": error}
+            return result
         try:
             status = central_classic.get_ap_status(classic_client, serial)
-        except central_classic.ClassicAuthError as exc:
-            return {"ok": False, "error": str(exc)}
-        return {
-            "ok": True, "seen": status.seen, "status": status.status, "group_name": status.group_name,
-            "site_name": status.site_name, "firmware_version": status.firmware_version,
+        except (central_classic.ClassicAuthError, central_classic.ClassicAPIError) as exc:
+            result["classic"] = {"error": str(exc)}
+            return result
+        result["classic"] = {
+            "checked_in": status.seen,
+            "status": status.status,
+            "group": status.group_name,
+            "site": status.site_name,
         }
+        return result
 
     # --- Assign Site (manual, run once devices have checked in) -----------
 
@@ -754,3 +1012,45 @@ class Api:
             "assigned": len(assigned), "failed": failed,
             "unresolved_sites": unresolved, "unrecognized_types": sorted(unrecognized_types),
         }
+
+    def assign_site_manual(self, identifiers: list[str], device_type: str, site_name: str) -> dict:
+        """Manual, single-shot counterpart to assign_site above - assigns
+        an explicit list of serials to an explicit site, for devices not
+        tracked in the working sheet at all (or to jump ahead of its
+        Target Site bookkeeping). Marks matching sheet rows Site
+        Assigned on success, same as assign_site, but doesn't require
+        the sheet to have a row for these serials."""
+        classic_type = _DEVICE_TYPE_TO_CLASSIC.get(device_type)
+        if classic_type is None:
+            return {"ok": False, "error": f"Unrecognized device type: {device_type!r}"}
+        if not identifiers:
+            return {"ok": False, "error": "Serial(s) are required."}
+
+        transcript = Transcript(prefix="gui-assign-site-manual")
+        classic_client, error = self._classic_client(transcript=transcript)
+        if error:
+            return {"ok": False, "error": error}
+        try:
+            site_ids = central_classic.list_sites(classic_client)
+        except (central_classic.ClassicAuthError, central_classic.ClassicAPIError) as exc:
+            return {"ok": False, "error": str(exc)}
+        site_id = site_ids.get(site_name)
+        if site_id is None:
+            return {"ok": False, "error": f"Site not found in Classic Central: {site_name!r}"}
+
+        assigned: list[str] = []
+        failed = 0
+        for i in range(0, len(identifiers), _PREPROVISION_CHUNK_SIZE):
+            chunk = identifiers[i:i + _PREPROVISION_CHUNK_SIZE]
+            try:
+                central_classic.associate_devices_to_site(classic_client, site_id, classic_type, chunk)
+            except central_classic.ClassicAPIError:
+                failed += len(chunk)
+                continue
+            assigned.extend(chunk)
+
+        sheet_path = workspace.get_sheet()
+        if assigned and sheet_path is not None:
+            sheet_module.mark_site_assigned(sheet_path, assigned)
+
+        return {"ok": failed == 0, "assigned": len(assigned), "failed": failed}

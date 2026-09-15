@@ -332,6 +332,21 @@ def list_glp_devices(client: CentralClient) -> list[GLPDeviceRecord]:
     return records
 
 
+def list_service_managers(client: CentralClient) -> list[dict]:
+    """Every service instance (application) provisioned in this GLCP
+    workspace - GET service-catalog/v1/service-managers, client must be
+    constructed with base_url=GLP_BASE_URL. Returns each item's raw
+    dict (id, name, ... per HPE's Service Catalog API); id is assumed
+    to be the same application_id restore_central_assignment/
+    list_glp_devices read/write on a device record (a provisioned
+    service instance IS what a device gets attached to) - NOT yet
+    confirmed against a real tenant, verify on first live use. Lets an
+    operator look up e.g. the UXI application's id directly instead of
+    having to already have one UXI device assigned somewhere to read it
+    off of (see restore_central_assignment's auto-discovery caveat)."""
+    return list(_paginate(client, "service-catalog/v1/service-managers", {}))
+
+
 _UNASSIGN_BATCH_SIZE = 5  # GLP's own per-request limit on this endpoint
 _UNASSIGN_POLL_INTERVAL = 3.0  # seconds between async-operation status polls
 _UNASSIGN_POLL_TIMEOUT = 120.0  # give up waiting on one transaction after this long

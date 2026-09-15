@@ -174,7 +174,6 @@ table.grid th {
   background: var(--surface-2); color: var(--ink-soft); font-size: 11px; text-transform: uppercase;
   letter-spacing: .02em; position: sticky; top: 0; line-height: 1.35;
 }
-table.grid th.chk-col, table.grid td.chk-col { cursor: default; text-align: center; width: 30px; }
 table.grid tbody tr:hover { background: var(--surface-2); }
 table.grid td.tick { text-align: center; color: var(--ok); font-weight: 700; }
 
