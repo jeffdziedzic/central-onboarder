@@ -8,4 +8,4 @@ carried over from the sibling aos10ct project's version.py.
 Bump this (and pyproject.toml's `version`, by hand, to match) alongside
 a new dated entry in central_onboarder/assets/CHANGELOG.md."""
 
-VERSION = "0.3.0"
+VERSION = "0.3.1"

@@ -2,6 +2,13 @@
 
 Newest first. This is a user-facing summary, not a full engineering log.
 
+## v0.3.1 (2026-09-17)
+
+**New features**
+- Windows packaging (PyInstaller, onedir) - first build that runs as a
+  real native app on Windows. See `central_onboarder/gui/packaging/
+  README_windows.md` for how to build and distribute it.
+
 ## v0.3.0 (2026-09-15)
 
 **Changed**
