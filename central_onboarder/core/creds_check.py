@@ -99,18 +99,20 @@ def test_classic_account(account: str, entry: dict, path=None) -> tuple[bool, st
     return True, "authenticated"
 
 
-def test_all(data: dict, path=None) -> list[CredentialTestResult]:
-    """data is credential_store.load()'s own shape - caller loads it
-    (and passes the same `path` it loaded from, for update_classic_
-    refresh_token's benefit)."""
+def test_all(path=None) -> list[CredentialTestResult]:
+    """Tests every account in token.yaml - its New Central/GLCP
+    credential and, if it has one, its Classic Central credential.
+    An account with neither is skipped."""
+    from . import credential_store
+
     results: list[CredentialTestResult] = []
-
-    for account in sorted(data.get("central", {})):
-        ok, detail = test_central_account(data["central"][account])
-        results.append(CredentialTestResult("central", account, ok, detail))
-
-    for account in sorted(data.get("classic", {})):
-        ok, detail = test_classic_account(account, data["classic"][account], path)
-        results.append(CredentialTestResult("classic", account, ok, detail))
-
+    for account in credential_store.list_accounts(path):
+        central_entry = credential_store.get_central_account(account, path)
+        if central_entry is not None:
+            ok, detail = test_central_account(central_entry)
+            results.append(CredentialTestResult("central", account, ok, detail))
+        classic_entry = credential_store.get_classic_account(account, path)
+        if classic_entry is not None:
+            ok, detail = test_classic_account(account, classic_entry, path)
+            results.append(CredentialTestResult("classic", account, ok, detail))
     return results

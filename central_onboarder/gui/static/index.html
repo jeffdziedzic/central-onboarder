@@ -16,7 +16,7 @@
       <button class="nav-item" data-screen="credentials">Credentials</button>
       <button class="nav-item" data-screen="devicelist">Device List</button>
       <button class="nav-item" data-screen="onboard">Onboard</button>
-      <button class="nav-item" data-screen="assignsite">Assign Site</button>
+      <button class="nav-item" data-screen="postonboard">Post Onboard</button>
       <button class="nav-item" data-screen="tools">Tools</button>
     </nav>
     <div class="sig">Created by DZWIFI</div>
@@ -28,6 +28,10 @@
       <button class="link-btn" id="changeSheetBtn">Change&hellip;</button>
       <button class="link-btn" id="newSheetBtn">New&hellip;</button>
       <span id="workspaceError" class="save-note error" hidden></span>
+      <span class="account-picker">
+        <label for="accountSelect">Account</label>
+        <select id="accountSelect"></select>
+      </span>
     </div>
 
     <section id="screen-home" class="screen">
@@ -39,7 +43,7 @@
         <li>Set up Credentials</li>
         <li>Build a Device List (CSV or add manually)</li>
         <li>Onboard adds devices to GLCP, assigns a subscription, assigns the service, and pre-provisions a Classic Central group, all in one Run Onboard Batch</li>
-        <li>Once devices have checked into Central, Assign Site assigns their New Central site</li>
+        <li>Once devices have checked into Central, Post Onboard assigns their New Central site and sets their hostname</li>
       </ol>
       <p>See the user guide for more details.</p>
       <p><button class="link-btn" id="userGuideLink">User Guide</button></p>
@@ -48,10 +52,24 @@
 
     <section id="screen-credentials" class="screen" hidden>
       <h1 class="pagetitle">Credentials</h1>
-      <p class="pagesub">Stored locally in <code>credentials.json</code>, never synced. Test checks a credential without writing anything.</p>
+      <p class="pagesub">Stored locally in <code id="tokenYamlPath">token.yaml</code> (same format as the aruba_central project's token.yaml). Each account holds one customer's New Central/GLCP, Classic Central, and UXI settings. The account picked in the top bar is the one every screen uses, and the cards below edit it.</p>
+
+      <div class="card">
+        <div class="card-head"><span class="card-title">Accounts</span></div>
+        <div class="field"><label>Selected account</label><span id="activeAccountLabel" class="mono">(none)</span></div>
+        <div class="field">
+          <label>New account</label>
+          <input type="text" id="newAccountName" placeholder="e.g. customer_ACME">
+          <button class="btn" id="addAccountBtn">Add</button>
+        </div>
+        <button class="btn danger" id="deleteAccountBtn">Delete Selected Account</button>
+        <p class="save-note" id="accountResult"></p>
+        <p class="save-note" id="legacyNote" hidden></p>
+      </div>
 
       <div class="card">
         <div class="card-head"><span class="card-title">Validate all Credentials</span></div>
+        <p class="fine-print">Tests every account in the file, not just the selected one.</p>
         <button class="btn primary" id="testAllBtn">Test All</button>
         <div id="testResults"></div>
       </div>
@@ -63,7 +81,6 @@
           <button class="link-btn hint-toggle" data-hint="central">How do I get this?</button>
         </div>
         <p class="hint-text" data-hint-text="central" hidden></p>
-        <div class="field"><label>Account name</label><input type="text" data-field="account"></div>
         <div class="field"><label>Base URL</label><input type="text" data-field="base_url" placeholder="us1.api.central.arubanetworks.com"></div>
         <div class="field"><label>Client ID</label><span class="masked-input"><input type="password" data-field="client_id"><button class="reveal-btn" type="button">&#128065;</button></span></div>
         <div class="field"><label>Client secret</label><span class="masked-input"><input type="password" data-field="client_secret"><button class="reveal-btn" type="button">&#128065;</button></span></div>
@@ -80,7 +97,6 @@
           <button class="link-btn hint-toggle" data-hint="classic">How do I get this?</button>
         </div>
         <p class="hint-text" data-hint-text="classic" hidden></p>
-        <div class="field"><label>Account name</label><input type="text" data-field="account"></div>
         <div class="field"><label>Base URL</label><input type="text" data-field="base_url" placeholder="app1-apigw.central.arubanetworks.com"></div>
         <div class="field"><label>Client ID</label><span class="masked-input"><input type="password" data-field="client_id"><button class="reveal-btn" type="button">&#128065;</button></span></div>
         <div class="field"><label>Client secret</label><span class="masked-input"><input type="password" data-field="client_secret"><button class="reveal-btn" type="button">&#128065;</button></span></div>
@@ -98,10 +114,9 @@
           <button class="link-btn hint-toggle" data-hint="ap_ssh">How do I get this?</button>
         </div>
         <p class="hint-text" data-hint-text="ap_ssh" hidden></p>
-        <div class="field"><label>Account name</label><input type="text" data-field="account"></div>
         <div class="field"><label>Username</label><input type="text" data-field="username"></div>
         <div class="field"><label>Password</label><span class="masked-input"><input type="password" data-field="password"><button class="reveal-btn" type="button">&#128065;</button></span></div>
-        <div class="field"><label>AP IP</label><input type="text" id="apSshIp" placeholder="192.0.2.220"></div>
+        <div class="field"><label>AP IP</label><input type="text" id="apSshIp" data-field="ap_ip" placeholder="192.0.2.220"></div>
         <button class="btn primary save-btn" data-save="ap_ssh">Save</button>
         <button class="btn danger wipe-btn" data-wipe="ap_ssh">Wipe</button>
         <p class="save-note" data-test-result="ap_ssh"></p>
@@ -122,7 +137,7 @@
 
       <div class="card">
         <div class="card-head"><span class="card-title">Wipe All Credentials</span></div>
-        <p class="fine-print">Removes everything stored. Cannot be undone; you'll need to re-enter everything from scratch.</p>
+        <p class="fine-print">Removes every account in token.yaml, not just the selected one. Cannot be undone; you'll need to re-enter everything from scratch.</p>
         <button class="btn danger" id="wipeAllCredentialsBtn">Wipe All Credentials</button>
         <p class="save-note" id="wipeAllCredentialsResult"></p>
       </div>
@@ -134,7 +149,7 @@
 
       <div class="card">
         <div class="card-title">Import CSV</div>
-        <p class="fine-print">Columns: Serial, MAC, Device Type, Target Group, Target Site, Subscription Key (any casing/spacing).</p>
+        <p class="fine-print">Columns: Serial, MAC, Device Type, Target Group, Target Site, Subscription Key, Hostname (any casing/spacing).</p>
         <button class="btn" id="downloadCsvTemplateBtn">Download Template&hellip;</button>
         <button class="btn primary" id="importCsvBtn">Import CSV&hellip;</button>
         <div id="importCsvResult"></div>
@@ -151,6 +166,7 @@
         <div class="field"><label>Target Site</label><input type="text" id="addTargetSite" list="siteOptions"></div>
         <p class="fine-print">Leave Target Group/Target Site blank for UXI rows.</p>
         <div class="field"><label>Subscription Key</label><input type="text" id="addSubscriptionKey"></div>
+        <div class="field"><label>Hostname</label><input type="text" id="addHostname" placeholder="optional - set on Post Onboard"></div>
         <datalist id="groupOptions"></datalist>
         <datalist id="siteOptions"></datalist>
         <button class="btn primary" id="addDeviceBtn">Add / Update Device</button>
@@ -167,7 +183,7 @@
           <thead>
             <tr>
               <th>Serial</th><th>MAC</th><th>Type</th><th>Target Group</th><th>Target Site</th>
-              <th>Sub. Key</th><th>GLCP</th><th>Sub.</th><th>Service</th><th>Preprov.</th><th>Site</th>
+              <th>Sub. Key</th><th>Hostname</th><th>GLCP</th><th>Sub.</th><th>Service</th><th>Preprov.</th><th>Site</th><th>Host.</th>
             </tr>
           </thead>
           <tbody id="deviceGridBody"></tbody>
@@ -235,9 +251,9 @@
       </div>
     </section>
 
-    <section id="screen-assignsite" class="screen" hidden>
-      <h1 class="pagetitle">Assign Site</h1>
-      <p class="pagesub">Manual step - run this once you know the relevant devices have actually checked into Central. Assigns every Device List row with a Target Site set, and not yet marked "Site", to that site.</p>
+    <section id="screen-postonboard" class="screen" hidden>
+      <h1 class="pagetitle">Post Onboard</h1>
+      <p class="pagesub">Manual steps - run these once you know the relevant devices have actually checked into Central. Assign Site first: a device has to be in a site or device group (provisioned in New Central) before its hostname can be set.</p>
       <div class="card">
         <div class="card-title">Assign Site</div>
         <p class="fine-print">Assigns explicit serials to a site directly - doesn't require the devices to be tracked in the Device List. Or check "Pull from Device List" to instead assign every Device List row with a Target Site set, and not yet marked "Site", to its own Target Site (Serial(s)/Device Type/Site Name fields below are ignored in that mode).</p>
@@ -256,6 +272,16 @@
         <button class="btn" id="pullClassicSitesBtn">Pull Sites</button>
         <button class="btn" id="manualAssignSiteBtn">Assign</button>
         <div id="manualAssignSiteResult"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Set Hostname</div>
+        <p class="fine-print">Sets each device's hostname in New Central (its own System Information profile, for APs, switches and gateways). The device must already be provisioned in New Central, in a site or device group. Type serials and hostnames paired in order, or check "Pull from Device List" to instead set every row with a Hostname and not yet marked "Host." (UXI rows are skipped).</p>
+        <label class="fine-print"><input type="checkbox" id="manualHostnamePullFromCsv"> Pull from Device List (sets every eligible row's own Hostname)</label>
+        <div class="field"><label>Serial(s)</label><input type="text" id="manualHostnameSerials" placeholder="comma-separated"></div>
+        <div class="field"><label>Hostname(s)</label><input type="text" id="manualHostnameNames" placeholder="comma-separated, same order"></div>
+        <button class="btn" id="manualSetHostnameBtn">Set Hostname</button>
+        <div id="manualSetHostnameResult"></div>
       </div>
 
       <div class="card">

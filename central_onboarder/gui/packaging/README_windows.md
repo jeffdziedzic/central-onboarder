@@ -63,7 +63,7 @@ folder; the operator unzips it anywhere and runs the `.exe` inside.
    central_onboarder/gui/static/...`, `_internal/central_onboarder/
    assets/...`) - confirmed by inspecting the built `dist/` tree
    directly, not assumed from the spec's `datas` list alone.
-4. **`credentials.json`/`workspace.json` resolve next to the real
+4. **`token.yaml` (formerly `credentials.json`)/`workspace.json` resolve next to the real
    `.exe`, not inside `_internal/`** - `core/credential_store.py`'s and
    `core/workspace.py`'s `default_path()` were already ported
    frozen-aware from the sibling project before this packaging work

@@ -2,6 +2,36 @@
 
 Newest first. This is a user-facing summary, not a full engineering log.
 
+## v0.4.0 (2026-09-24)
+
+**New features**
+- Multiple accounts. Credentials now live in `token.yaml` (same format
+  as the aruba_central project's token.yaml), one block per customer,
+  and an **Account** dropdown in the top bar (visible on every screen) picks which one every
+  screen uses. Add/delete accounts on the Credentials screen.
+- UXI application_id is now stored per account instead of once for the
+  whole app.
+- Set Hostname (Post Onboard screen): sets a device's hostname in New
+  Central via its System Information profile - APs, switches and
+  gateways. New Hostname column in the device list (and CSV import),
+  plus a Hostname Set tracking column. Tested live on a real AP.
+
+**Changed**
+- The Assign Site screen is now **Post Onboard** (Assign Site, Set
+  Hostname, Create New Site).
+- Device lists from older versions are upgraded automatically (two
+  columns inserted, existing data moved along with them).
+- `credentials.json` is replaced by `token.yaml`. An existing
+  credentials.json is imported automatically on first launch and left
+  in place; delete it once the imported account tests OK.
+- Wipe on a credentials card now clears only the selected account.
+
+**Fixed**
+- Check Status showed every switch and gateway as "not seen yet" in
+  Classic Central, even when it was Up - it only asked Classic
+  Central's AP endpoint. It now tries the AP, switch and gateway
+  endpoints and shows which type answered.
+
 ## v0.3.1 (2026-09-17)
 
 **New features**

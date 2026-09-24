@@ -117,44 +117,140 @@ function fieldsFor(card) {
   return values;
 }
 
+// Card field name -> token.yaml key, per card. Mirrors
+// core/credential_store.py's CATEGORY_KEYS.
+const CARD_KEYS = {
+  central: { base_url: "base_url", client_id: "client_id", client_secret: "client_secret" },
+  classic: {
+    base_url: "apigw_base_url", client_id: "apigw_client_id",
+    client_secret: "apigw_client_secret", refresh_token: "apigw_refresh_token",
+  },
+  ap_ssh: { username: "ap_ssh_username", password: "ap_ssh_password", ap_ip: "ap_ip" },
+  uxi: { application_id: "uxi_application_id", region: "uxi_region" },
+};
+
+// The account every save/test/wipe on the Credentials screen acts on -
+// the same one the top bar's dropdown shows, and the one every other
+// screen's API calls use.
+let activeAccount = null;
+
 function populateCard(card, entry) {
-  if (!entry) return;
+  const keys = CARD_KEYS[card.dataset.category];
   card.querySelectorAll("[data-field]").forEach((input) => {
-    if (entry[input.dataset.field] !== undefined) input.value = entry[input.dataset.field];
+    const value = entry ? entry[keys[input.dataset.field]] : undefined;
+    input.value = value === undefined || value === null ? "" : value;
+  });
+}
+
+function renderAccountPicker(accounts, active) {
+  const select = document.getElementById("accountSelect");
+  select.innerHTML = "";
+  const names = Object.keys(accounts);
+  if (names.length === 0) {
+    const opt = document.createElement("option");
+    opt.value = "";
+    opt.textContent = "(no accounts - add one in Credentials)";
+    select.appendChild(opt);
+    select.disabled = true;
+    return;
+  }
+  select.disabled = false;
+  names.forEach((name) => {
+    const opt = document.createElement("option");
+    opt.value = name;
+    opt.textContent = name;
+    if (name === active) opt.selected = true;
+    select.appendChild(opt);
   });
 }
 
 async function loadCredentials() {
   const data = await api().get_credentials();
+  activeAccount = data.active;
+  renderAccountPicker(data.accounts, data.active);
+  document.getElementById("tokenYamlPath").textContent = data.path;
+  document.getElementById("activeAccountLabel").textContent = data.active || "(none)";
 
-  const central = data.central || {};
-  const firstCentral = Object.keys(central)[0];
-  if (firstCentral) {
-    const card = document.querySelector('.card[data-category="central"]');
-    card.querySelector('[data-field="account"]').value = firstCentral;
-    populateCard(card, central[firstCentral]);
-  }
+  const entry = data.active ? data.accounts[data.active] : null;
+  document.querySelectorAll(".card[data-category]").forEach((card) => populateCard(card, entry));
 
-  const classic = data.classic || {};
-  const firstClassic = Object.keys(classic)[0];
-  if (firstClassic) {
-    const card = document.querySelector('.card[data-category="classic"]');
-    card.querySelector('[data-field="account"]').value = firstClassic;
-    populateCard(card, classic[firstClassic]);
+  const legacyNote = document.getElementById("legacyNote");
+  if (data.migrated && data.migrated.length) {
+    legacyNote.className = "save-note ok";
+    legacyNote.textContent =
+      `Imported ${data.migrated.join(", ")} from the old credentials.json into token.yaml. ` +
+      "Once you've confirmed they test OK, you can delete credentials.json.";
+    legacyNote.hidden = false;
+  } else if (data.legacy_file_present) {
+    legacyNote.className = "save-note";
+    legacyNote.textContent = "An old credentials.json is still next to the app. It is no longer read, so you can delete it.";
+    legacyNote.hidden = false;
+  } else {
+    legacyNote.hidden = true;
   }
+}
 
-  const apSsh = data.ap_ssh || {};
-  const firstApSsh = Object.keys(apSsh)[0];
-  if (firstApSsh) {
-    const card = document.querySelector('.card[data-category="ap_ssh"]');
-    card.querySelector('[data-field="account"]').value = firstApSsh;
-    populateCard(card, apSsh[firstApSsh]);
-    if (apSsh[firstApSsh].ap_ip) document.getElementById("apSshIp").value = apSsh[firstApSsh].ap_ip;
-  }
+function resetAccountScopedState() {
+  document.querySelectorAll(".status-pill").forEach((pill) => (pill.className = "status-pill idle"));
+  document.querySelectorAll("[data-test-result]").forEach((el) => { el.className = "save-note"; el.textContent = ""; });
+  document.getElementById("testResults").innerHTML = "";
+  document.getElementById("glcpServicesResult").innerHTML = "";
+  // Group/site pick-lists came from the previous account's tenant.
+  document.getElementById("groupOptions").innerHTML = "";
+  document.getElementById("siteOptions").innerHTML = "";
+}
 
-  if (data.uxi) {
-    populateCard(document.querySelector('.card[data-category="uxi"]'), data.uxi);
-  }
+function wireAccountPicker() {
+  document.getElementById("accountSelect").addEventListener("change", async (e) => {
+    const result = await api().set_active_account(e.target.value);
+    if (!result.ok) {
+      showAccountResult(false, result.error);
+    }
+    resetAccountScopedState();
+    await loadCredentials();
+  });
+}
+
+function showAccountResult(ok, message) {
+  const el = document.getElementById("accountResult");
+  el.className = "save-note " + (ok ? "ok" : "error");
+  el.textContent = message;
+}
+
+function wireAddAccount() {
+  document.getElementById("addAccountBtn").addEventListener("click", async () => {
+    const input = document.getElementById("newAccountName");
+    const result = await api().add_account(input.value);
+    if (!result.ok) {
+      showAccountResult(false, result.error);
+      return;
+    }
+    input.value = "";
+    resetAccountScopedState();
+    await loadCredentials();
+    showAccountResult(true, `Added and selected "${activeAccount}". Fill in its credentials below.`);
+  });
+}
+
+function wireDeleteAccount() {
+  document.getElementById("deleteAccountBtn").addEventListener("click", () => {
+    if (!activeAccount) {
+      showAccountResult(false, "No account selected.");
+      return;
+    }
+    const name = activeAccount;
+    showConfirmModal(
+      "Delete account",
+      `This removes the account "${name}" and every credential stored under it from token.yaml. Cannot be undone.`,
+      "DELETE", "Delete",
+      async () => {
+        await api().delete_account(name);
+        resetAccountScopedState();
+        await loadCredentials();
+        showAccountResult(true, `Deleted "${name}".`);
+      }
+    );
+  });
 }
 
 // --- hints -----------------------------------------------------------------
@@ -206,20 +302,24 @@ function wireSaveButtons() {
       const category = btn.dataset.save;
       const card = btn.closest(".card");
       const values = fieldsFor(card);
+      const account = activeAccount;
+      if (!account) {
+        showSaveNote(card, false, "Add an account first (Accounts card above).");
+        return;
+      }
       let result;
       if (category === "central") {
-        result = await api().save_central(values.account, values.base_url, values.client_id, values.client_secret);
+        result = await api().save_central(account, values.base_url, values.client_id, values.client_secret);
       } else if (category === "classic") {
         result = await api().save_classic(
-          values.account, values.base_url, values.client_id, values.client_secret, values.refresh_token
+          account, values.base_url, values.client_id, values.client_secret, values.refresh_token
         );
       } else if (category === "ap_ssh") {
-        const apIp = document.getElementById("apSshIp").value.trim() || null;
-        result = await api().save_ap_ssh(values.account, values.username, values.password, apIp);
+        result = await api().save_ap_ssh(account, values.username, values.password, values.ap_ip || null);
       } else if (category === "uxi") {
-        result = await api().save_uxi(values.application_id, values.region || null);
+        result = await api().save_uxi(account, values.application_id, values.region || null);
       }
-      showSaveNote(card, result.ok, result.ok ? "Saved." : result.error);
+      showSaveNote(card, result.ok, result.ok ? `Saved to "${account}".` : result.error);
     });
   });
 }
@@ -257,7 +357,7 @@ function wireTestButtons() {
       const resultEl = card.querySelector(`[data-test-result="${category}"]`);
       resultEl.className = "save-note";
       resultEl.textContent = "Testing...";
-      const account = card.querySelector('[data-field="account"]').value.trim();
+      const account = activeAccount || "";
       const result = category === "central" ? await api().test_central(account) : await api().test_classic(account);
       setPill(category, result.ok ? "ok" : "fail");
       resultEl.className = "save-note " + (result.ok ? "ok" : "error");
@@ -275,12 +375,17 @@ function wireWipeButtons() {
     btn.addEventListener("click", () => {
       const category = btn.dataset.wipe;
       const card = btn.closest(".card");
+      const account = activeAccount;
+      if (!account) {
+        showSaveNote(card, false, "No account selected.");
+        return;
+      }
       showConfirmModal(
         "Wipe stored credential",
-        `This removes every stored ${category} credential. Cannot be undone.`,
+        `This removes the ${category} values from account "${account}" (its other credentials stay). Cannot be undone.`,
         "WIPE", "Wipe",
         async () => {
-          await api().wipe_credentials(category);
+          await api().wipe_credentials(account, category);
           clearCardFields(card);
           setPill(category, "idle");
           showSaveNote(card, true, "Wiped.");
@@ -325,8 +430,8 @@ function wireWipeAllCredentials() {
       "WIPE ALL", "Wipe All",
       async () => {
         await api().wipe_all_credentials();
-        document.querySelectorAll(".card[data-category]").forEach((card) => clearCardFields(card));
-        document.querySelectorAll(".status-pill").forEach((pill) => (pill.className = "status-pill idle"));
+        resetAccountScopedState();
+        await loadCredentials();
         const resultEl = document.getElementById("wipeAllCredentialsResult");
         resultEl.className = "save-note ok";
         resultEl.textContent = "Wiped.";
@@ -392,9 +497,10 @@ async function loadDevices() {
     tr.innerHTML =
       `<td>${d.serial}</td><td>${d.mac || ""}</td><td>${d.device_type || ""}</td>` +
       `<td>${d.target_group || ""}</td><td>${d.target_site || ""}</td><td>${d.subscription_key || ""}</td>` +
+      `<td>${d.hostname || ""}</td>` +
       `<td class="tick">${tick(d.added_to_glcp)}</td><td class="tick">${tick(d.subscription_assigned)}</td>` +
       `<td class="tick">${tick(d.service_assigned)}</td><td class="tick">${tick(d.preprovisioned)}</td>` +
-      `<td class="tick">${tick(d.site_assigned)}</td>`;
+      `<td class="tick">${tick(d.site_assigned)}</td><td class="tick">${tick(d.hostname_set)}</td>`;
     body.appendChild(tr);
   });
 }
@@ -412,6 +518,7 @@ function wireAddDevice() {
       target_group: document.getElementById("addTargetGroup").value.trim(),
       target_site: document.getElementById("addTargetSite").value.trim(),
       subscription_key: document.getElementById("addSubscriptionKey").value.trim(),
+      hostname: document.getElementById("addHostname").value.trim(),
     };
     const resultEl = document.getElementById("addDeviceResult");
     if (!device.serial) {
@@ -668,8 +775,37 @@ function wireCheckStatus() {
     if (c.skipped) classicLine = `Classic Central: skipped (${c.skipped})`;
     else if (c.error) classicLine = `Classic Central: error (${c.error})`;
     else if (!c.checked_in) classicLine = "Classic Central: not seen yet - hasn't checked into Central";
-    else classicLine = `Classic Central: Status ${c.status}, Group: ${c.group || "(none)"}, Site: ${c.site || "(none)"}`;
+    else classicLine = `Classic Central${c.device_type ? ` (${c.device_type})` : ""}: Status ${c.status}, Group: ${c.group || "(none)"}, Site: ${c.site || "(none)"}`;
     resultEl.innerHTML = `<p class="save-note">${glcpLine}</p><p class="save-note">${classicLine}</p>`;
+  });
+}
+
+// --- set hostname (Post Onboard) ---------------------------------------
+
+function wireManualSetHostname() {
+  document.getElementById("manualSetHostnameBtn").addEventListener("click", async () => {
+    const resultEl = document.getElementById("manualSetHostnameResult");
+    const pullFromCsv = document.getElementById("manualHostnamePullFromCsv").checked;
+
+    let result;
+    if (pullFromCsv) {
+      resultEl.textContent = "Running...";
+      result = await api().run_set_hostname();
+    } else {
+      const serials = parseIdentifiers(document.getElementById("manualHostnameSerials").value);
+      const hostnames = parseIdentifiers(document.getElementById("manualHostnameNames").value);
+      if (!serials.length || !hostnames.length) {
+        resultEl.innerHTML = '<p class="save-note error">Serial(s) and Hostname(s) are required.</p>';
+        return;
+      }
+      resultEl.textContent = "Running...";
+      result = await api().set_hostname_manual(serials, hostnames);
+    }
+
+    resultEl.innerHTML = result.error
+      ? `<p class="save-note error">${result.error}</p>`
+      : `<div class="result-block">${renderResultsBlock(resultEl, "Set Hostname", result)}</div>`;
+    loadDevices();
   });
 }
 
@@ -778,6 +914,9 @@ async function init() {
   wireChangelogLink();
   wireChangeSheet();
   wireNewSheet();
+  wireAccountPicker();
+  wireAddAccount();
+  wireDeleteAccount();
   wireHintToggles();
   wireRevealToggles();
   wireSaveButtons();
@@ -799,6 +938,7 @@ async function init() {
   wireManualPreprovision();
   wireCheckStatus();
   wireManualAssignSite();
+  wireManualSetHostname();
   wireCreateSite();
   wireResetToDefault();
 

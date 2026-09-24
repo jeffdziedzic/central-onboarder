@@ -50,8 +50,8 @@ it against a real tenant and it did what you expected. In particular:
   (and region, if applicable), on the Credentials screen - not a
   secret, just an identifier GLCP needs to know which application to
   attach a device to.
-- Windows/macOS packaging (a standalone .exe/.app) hasn't been built
-  yet - run this from a Python checkout (see the repo's README).
+- A Windows .exe build exists (see `gui/packaging/README_windows.md`);
+  macOS packaging hasn't been built yet.
 - No CLI - the GUI is the only front end.
 
 ## Before you start
@@ -63,19 +63,51 @@ it against a real tenant and it did what you expected. In particular:
   UXI rows additionally need a UXI application_id stored (see the
   Credentials screen's UXI Application card). See the Credentials
   screen's "How do I get this?" links for the OAuth clients.
+- **Accounts / token.yaml**: credentials live in `token.yaml` next to
+  the app (next to the .exe in the Windows build), in the same format
+  as the aruba_central project's token.yaml, so an account block can be
+  copied between the two files. One account = one customer/tenant:
+
+  ```yaml
+  accounts:
+    customer_ACME:
+      base_url: https://us4.api.central.arubanetworks.com   # New Central / GLCP
+      client_id: ...
+      client_secret: ...
+      apigw_base_url: https://apigw-uswest4.central.arubanetworks.com  # Classic Central (optional)
+      apigw_client_id: ...
+      apigw_client_secret: ...
+      apigw_refresh_token: ...
+      uxi_application_id: ...   # optional, this tool only
+  default: customer_ACME
+  ```
+
+  The **Account** dropdown in the top bar (visible on every screen) picks which account every
+  screen talks to (it's saved as `default`). Double-check it before
+  running anything that makes changes. You can edit the file by hand or
+  through the Credentials screen; when the app saves it, any comments
+  you added are dropped. The Classic refresh token changes every time
+  it's used and the app writes the new one back, so don't keep a
+  second copy of the same Classic login in another tool's file. An
+  older `credentials.json` is imported into `token.yaml` automatically
+  on first launch and can be deleted afterwards.
 - **Device list**: a single working Excel file tracks every device
   you're onboarding - its columns are Serial, MAC, Device Type (AP /
   Switch / Gateway / UXI), Target Group, Target Site, Subscription Key,
-  plus tracking columns this tool fills in as you complete each step.
-  Leave Target Group/Target Site blank on UXI rows. Import a CSV or add
+  Hostname, plus tracking columns this tool fills in as you complete
+  each step. Leave Target Group/Target Site/Hostname blank on UXI rows.
+  A device list made by an older version (no Hostname column) is
+  upgraded automatically the first time it's opened - existing data
+  moves with it. Import a CSV or add
   devices manually from the Device List screen - a CSV can freely mix
   all four device types in one file.
 
 ## Screens
 
-1. **Credentials** - store your New Central and Classic Central API
-   clients, the UXI application_id, and an (unused) AP SSH credential.
-   Test checks a credential without writing anything.
+1. **Credentials** - add or delete accounts, and store the selected
+   account's New Central and Classic Central API clients, UXI
+   application_id, and an (unused) AP SSH credential. Test checks a
+   credential without writing anything; Test All checks every account.
 2. **Device List** - set your working device-list file, import a CSV,
    or add/edit devices manually.
 3. **Onboard** - Run Onboard Batch: for pending devices, add to GLCP,
@@ -91,12 +123,23 @@ it against a real tenant and it did what you expected. In particular:
    same as a slice of Run Onboard Batch, useful for retrying just one
    step. Check Status looks up a serial or MAC's full state across both
    GLCP/New Central and Classic Central in one go.
-4. **Assign Site** - once an AP/Switch/Gateway device has actually
-   checked into Central, assign it to a New Central site. Type an
-   explicit list of serials, or check "Pull from Device List" to
-   instead assign every eligible sheet row to its own Target Site. This
-   is a manual step you run when you know devices are online, not an
-   automatic background poll. "Pull Sites" fetches site names from
-   Classic Central into a dropdown. Create New Site is here too.
+4. **Post Onboard** - manual steps you run when you know devices are
+   online, not an automatic background poll. This tool assumes New
+   Central is used for configuration.
+   - **Assign Site**: once an AP/Switch/Gateway device has actually
+     checked into Central, assign it to a New Central site. Type an
+     explicit list of serials, or check "Pull from Device List" to
+     instead assign every eligible sheet row to its own Target Site.
+     "Pull Sites" fetches site names from Classic Central into a
+     dropdown.
+   - **Set Hostname**: sets the device's hostname in New Central, in
+     its own copy of the default System Information profile
+     (`sys-system-info-profile`, same for APs, switches and gateways).
+     The device must already be provisioned in New Central (in a site
+     or device group) - an unprovisioned device is reported and
+     skipped, nothing is written. Type serials and hostnames paired in
+     order, or check "Pull from Device List" to set every row with a
+     Hostname not yet marked "Host." (UXI rows skipped).
+   - **Create New Site**.
 5. **Tools** - Reset to Default (clears the working device list pointer
    and every stored credential).

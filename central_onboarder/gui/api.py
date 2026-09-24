@@ -42,6 +42,16 @@ _DEVICE_TYPE_TO_CLASSIC = {
     "Gateway": central_classic.DEVICE_TYPE_GATEWAY,
 }
 
+# GLCP device record's deviceType -> which Classic Central monitoring
+# endpoint to try first in Check Status. Only an ordering hint (the
+# field name/values aren't live-confirmed) - get_device_status falls
+# back to trying all three regardless.
+_GLCP_DEVICE_TYPE_HINT = {
+    "AP": "AP", "IAP": "AP",
+    "SWITCH": "Switch",
+    "GATEWAY": "Gateway", "CONTROLLER": "Gateway",
+}
+
 _CSV_HEADER_ALIASES = {
     "serial": "serial", "serial number": "serial", "serial_no": "serial", "serial_number": "serial",
     "mac": "mac", "mac address": "mac", "mac_address": "mac",
@@ -49,6 +59,7 @@ _CSV_HEADER_ALIASES = {
     "target group": "target_group", "target_group": "target_group", "group": "target_group",
     "target site": "target_site", "target_site": "target_site", "site": "target_site",
     "subscription key": "subscription_key", "subscription_key": "subscription_key",
+    "hostname": "hostname", "host name": "hostname", "host_name": "hostname",
 }
 
 
@@ -124,16 +135,51 @@ class Api:
         except (OSError, subprocess.SubprocessError) as exc:
             return {"ok": False, "error": f"Couldn't open {path}: {exc}"}
 
-    # --- credentials -------------------------------------------------------
+    # --- credentials / accounts ------------------------------------------
 
     def get_credentials(self) -> dict:
-        return credential_store.load()
+        """Everything the Credentials screen and the account dropdown
+        need: every account (full values - see module docstring), which
+        one is active, and where the file lives.
+
+        Also where the one-time credentials.json -> token.yaml migration
+        runs (it's the first call the frontend makes that touches
+        credentials) - a no-op once token.yaml exists."""
+        migrated = credential_store.migrate_legacy_json()
+        data = credential_store.load()
+        return {
+            "path": str(credential_store.default_path()),
+            "accounts": data["accounts"],
+            "active": credential_store.get_active_account(),
+            "migrated": migrated,
+            "legacy_file_present": credential_store.legacy_path().exists(),
+        }
 
     def get_hints(self) -> dict:
         return creds_check.HINTS
 
-    def wipe_credentials(self, category: str) -> dict:
-        credential_store.clear_category(category)
+    def set_active_account(self, account: str) -> dict:
+        try:
+            credential_store.set_active_account(account)
+        except KeyError:
+            return {"ok": False, "error": f"No account named '{account}'."}
+        return {"ok": True}
+
+    def add_account(self, account: str) -> dict:
+        account = (account or "").strip()
+        if not account:
+            return {"ok": False, "error": "Account name is required."}
+        if account in credential_store.list_accounts():
+            return {"ok": False, "error": f"An account named '{account}' already exists."}
+        credential_store.add_account(account)
+        return {"ok": True}
+
+    def delete_account(self, account: str) -> dict:
+        credential_store.delete_account(account)
+        return {"ok": True}
+
+    def wipe_credentials(self, account: str, category: str) -> dict:
+        credential_store.clear_category(account, category)
         return {"ok": True}
 
     def wipe_all_credentials(self) -> dict:
@@ -167,15 +213,18 @@ class Api:
         credential_store.set_ap_ssh_credential(account, username, password, ap_ip=ap_ip)
         return {"ok": True}
 
-    def save_uxi(self, application_id: str, region: str | None = None) -> dict:
+    def save_uxi(self, account: str, application_id: str, region: str | None = None) -> dict:
         """Not a credential - the GreenLake application_id (and its
-        region) for the UXI application, used by run_onboard_batch/
-        assign_service for UXI rows since restore_central_assignment's
-        auto-discovery has nothing to find it from in a workspace where
-        no UXI sensor has ever been assigned yet."""
+        region) for the UXI application in this account's workspace,
+        used by run_onboard_batch/assign_service for UXI rows since
+        restore_central_assignment's auto-discovery has nothing to find
+        it from in a workspace where no UXI sensor has ever been
+        assigned yet."""
+        if not account:
+            return {"ok": False, "error": "Select or add an account first."}
         if not application_id:
             return {"ok": False, "error": "Application ID is required."}
-        credential_store.set_uxi_application(application_id, region or None)
+        credential_store.set_uxi_application(account, application_id, region or None)
         return {"ok": True}
 
     def list_glcp_services(self) -> dict:
@@ -187,7 +236,7 @@ class Api:
         not-yet-confirmed-against-a-real-tenant caveat on this endpoint."""
         creds = self._glp_creds()
         if creds is None:
-            return {"ok": False, "error": "No New Central credentials stored - add one in Credentials first."}
+            return {"ok": False, "error": "The selected account has no New Central credentials - add them in Credentials first."}
         client_id, client_secret = creds
         transcript = Transcript(prefix="gui-list-glcp-services")
         client = central.CentralClient(central.GLP_BASE_URL, client_id, client_secret, transcript=transcript)
@@ -201,61 +250,56 @@ class Api:
     def test_central(self, account: str) -> dict:
         entry = credential_store.get_central_account(account) if account else None
         if entry is None:
-            return {"ok": False, "detail": f"No stored account named '{account}' - Save it first."}
+            return {"ok": False, "detail": f"Account '{account}' has no New Central credentials - Save them first."}
         ok, detail = creds_check.test_central_account(entry)
         return {"ok": ok, "detail": detail}
 
     def test_classic(self, account: str) -> dict:
         entry = credential_store.get_classic_account(account) if account else None
         if entry is None:
-            return {"ok": False, "detail": f"No stored account named '{account}' - Save it first."}
+            return {"ok": False, "detail": f"Account '{account}' has no Classic Central credentials - Save them first."}
         ok, detail = creds_check.test_classic_account(account, entry)
         return {"ok": ok, "detail": detail}
 
     def test_all(self) -> list[dict]:
-        data = credential_store.load()
-        results = creds_check.test_all(data)
+        results = creds_check.test_all()
         return [{"category": r.category, "key": r.key, "ok": r.ok, "detail": r.detail} for r in results]
 
     # --- credential resolution helpers -----------------------------------
-
-    def _first_account(self, category: str) -> tuple[str, dict] | None:
-        data = credential_store.load().get(category, {})
-        if not data:
-            return None
-        name = next(iter(data))
-        return name, data[name]
+    # Every API call uses the ACTIVE account (token.yaml's `default`, set
+    # by the account dropdown) - read fresh from disk on each call, so
+    # switching accounts takes effect on the very next call.
 
     def _central_creds(self) -> tuple[str, str, str] | None:
-        found = self._first_account("central")
-        if found is None:
+        account = credential_store.get_active_account()
+        entry = credential_store.get_central_account(account) if account else None
+        if entry is None:
             return None
-        _, account = found
-        return account["base_url"], account["client_id"], account["client_secret"]
+        return entry["base_url"], entry["client_id"], entry["client_secret"]
 
     def _glp_creds(self) -> tuple[str, str] | None:
         """GLP reuses New Central's client_id/secret - always against
         central.GLP_BASE_URL, never the account's own regional base_url."""
-        found = self._first_account("central")
-        if found is None:
+        creds = self._central_creds()
+        if creds is None:
             return None
-        _, account = found
-        return account["client_id"], account["client_secret"]
+        _, client_id, client_secret = creds
+        return client_id, client_secret
 
     def _classic_creds(self) -> tuple[str, str, str, str, str] | None:
-        found = self._first_account("classic")
-        if found is None:
+        account = credential_store.get_active_account()
+        entry = credential_store.get_classic_account(account) if account else None
+        if entry is None:
             return None
-        account_name, account = found
         return (
-            account["base_url"], account["client_id"], account["client_secret"],
-            account["refresh_token"], account_name,
+            entry["base_url"], entry["client_id"], entry["client_secret"],
+            entry["refresh_token"], account,
         )
 
     def _classic_client(self, transcript: Transcript | None = None) -> tuple[object, str] | None:
         creds = self._classic_creds()
         if creds is None:
-            return None, "No Classic Central credentials stored - add one in Credentials first."
+            return None, "The selected account has no Classic Central credentials - add them in Credentials first."
         base_url, client_id, client_secret, refresh_token, account_name = creds
         tm = central_classic.ClassicTokenManager(
             base_url, client_id, client_secret, refresh_token,
@@ -279,6 +323,15 @@ class Api:
         }
 
     def _schema_mismatch_error(self, sheet_path: Path) -> str | None:
+        """Also where a pre-Hostname sheet gets upgraded in place (see
+        sheet.upgrade_sheet_schema) - a no-op for a current sheet."""
+        try:
+            sheet_module.upgrade_sheet_schema(sheet_path)
+        except sheet_module.SheetLockedError:
+            return (
+                f"'{sheet_path}' needs a one-time upgrade (new Hostname columns) but is open in "
+                "another program - close it in Excel and try again."
+            )
         result = sheet_module.validate_sheet_schema(sheet_path)
         if result.ok:
             return None
@@ -351,9 +404,11 @@ class Api:
                 {
                     "serial": r.serial, "mac": r.mac, "device_type": r.device_type,
                     "target_group": r.target_group, "target_site": r.target_site,
-                    "subscription_key": r.subscription_key, "added_to_glcp": r.added_to_glcp,
+                    "subscription_key": r.subscription_key, "hostname": r.hostname,
+                    "added_to_glcp": r.added_to_glcp,
                     "subscription_assigned": r.subscription_assigned, "service_assigned": r.service_assigned,
-                    "preprovisioned": r.preprovisioned, "site_assigned": r.site_assigned, "notes": r.notes,
+                    "preprovisioned": r.preprovisioned, "site_assigned": r.site_assigned,
+                    "hostname_set": r.hostname_set, "notes": r.notes,
                 }
                 for r in rows
             ],
@@ -390,9 +445,9 @@ class Api:
         try:
             with open(path, "w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
-                writer.writerow(("Serial", "MAC", "Device Type", "Target Group", "Target Site", "Subscription Key"))
-                writer.writerow(["CN12345678", "11:22:33:44:AA:BB", "AP", "Building-1-APs", "Building 1", "PAYHAH3YJE6THY"])
-                writer.writerow(["CN87654321", "44:33:22:11:BB:AA", "Switch", "", "", ""])
+                writer.writerow(("Serial", "MAC", "Device Type", "Target Group", "Target Site", "Subscription Key", "Hostname"))
+                writer.writerow(["CN12345678", "11:22:33:44:AA:BB", "AP", "Building-1-APs", "Building 1", "PAYHAH3YJE6THY", "BLDG1-AP-01"])
+                writer.writerow(["CN87654321", "44:33:22:11:BB:AA", "Switch", "", "", "", "BLDG1-SW-01"])
         except OSError as exc:
             return {"ok": False, "error": f"Could not write template: {exc}"}
         return {"ok": True, "path": path}
@@ -446,7 +501,7 @@ class Api:
         screen's Target Group/Target Site pickers."""
         creds = self._central_creds()
         if creds is None:
-            return {"ok": False, "error": "No New Central credentials stored - add one in Credentials first."}
+            return {"ok": False, "error": "The selected account has no New Central credentials - add them in Credentials first."}
         base_url, client_id, client_secret = creds
         transcript = Transcript(prefix="gui-central-destinations")
         client = central.CentralClient(base_url, client_id, client_secret, transcript=transcript)
@@ -466,7 +521,7 @@ class Api:
             return {"ok": False, "error": "No working device list set."}
         creds = self._central_creds()
         if creds is None:
-            return {"ok": False, "error": "No New Central credentials stored - add one in Credentials first."}
+            return {"ok": False, "error": "The selected account has no New Central credentials - add them in Credentials first."}
         base_url, client_id, client_secret = creds
         transcript = Transcript(prefix="gui-load-destinations")
         client = central.CentralClient(base_url, client_id, client_secret, transcript=transcript)
@@ -493,7 +548,7 @@ class Api:
         """Tools screen - creates a new New Central site."""
         creds = self._central_creds()
         if creds is None:
-            return {"ok": False, "error": "No New Central credentials stored - add one in Credentials first."}
+            return {"ok": False, "error": "The selected account has no New Central credentials - add them in Credentials first."}
         base_url, client_id, client_secret = creds
         transcript = Transcript(prefix="gui-create-site")
         client = central.CentralClient(base_url, client_id, client_secret, transcript=transcript)
@@ -519,7 +574,7 @@ class Api:
             return {"ok": False, "error": f"{len(serials)} serial(s) but {len(macs)} MAC(s) - each device needs both, paired in order."}
         creds = self._glp_creds()
         if creds is None:
-            return {"ok": False, "error": "No New Central credentials stored - add one in Credentials first."}
+            return {"ok": False, "error": "The selected account has no New Central credentials - add them in Credentials first."}
         client_id, client_secret = creds
         transcript = Transcript(prefix="gui-add-devices-to-glcp")
         client = central.CentralClient(central.GLP_BASE_URL, client_id, client_secret, transcript=transcript)
@@ -537,7 +592,7 @@ class Api:
         """identifiers: each may be a serial OR a MAC address."""
         creds = self._glp_creds()
         if creds is None:
-            return {"ok": False, "error": "No New Central credentials stored - add one in Credentials first."}
+            return {"ok": False, "error": "The selected account has no New Central credentials - add them in Credentials first."}
         client_id, client_secret = creds
         transcript = Transcript(prefix="gui-assign-subscription")
         client = central.CentralClient(central.GLP_BASE_URL, client_id, client_secret, transcript=transcript)
@@ -554,7 +609,7 @@ class Api:
     def remove_subscription_key(self, identifiers: list[str]) -> dict:
         creds = self._glp_creds()
         if creds is None:
-            return {"ok": False, "error": "No New Central credentials stored - add one in Credentials first."}
+            return {"ok": False, "error": "The selected account has no New Central credentials - add them in Credentials first."}
         client_id, client_secret = creds
         transcript = Transcript(prefix="gui-remove-subscription-key")
         client = central.CentralClient(central.GLP_BASE_URL, client_id, client_secret, transcript=transcript)
@@ -575,7 +630,7 @@ class Api:
         workspace)."""
         creds = self._glp_creds()
         if creds is None:
-            return {"ok": False, "error": "No New Central credentials stored - add one in Credentials first."}
+            return {"ok": False, "error": "The selected account has no New Central credentials - add them in Credentials first."}
         client_id, client_secret = creds
         transcript = Transcript(prefix="gui-assign-service")
         client = central.CentralClient(central.GLP_BASE_URL, client_id, client_secret, transcript=transcript)
@@ -597,7 +652,7 @@ class Api:
         only reflects what run_onboard_batch/assign_service have done."""
         creds = self._glp_creds()
         if creds is None:
-            return {"ok": False, "error": "No New Central credentials stored - add one in Credentials first."}
+            return {"ok": False, "error": "The selected account has no New Central credentials - add them in Credentials first."}
         client_id, client_secret = creds
         transcript = Transcript(prefix="gui-remove-service")
         client = central.CentralClient(central.GLP_BASE_URL, client_id, client_secret, transcript=transcript)
@@ -635,7 +690,7 @@ class Api:
 
         creds = self._glp_creds()
         if creds is None:
-            return {"ok": False, "error": "No New Central credentials stored - add one in Credentials first."}
+            return {"ok": False, "error": "The selected account has no New Central credentials - add them in Credentials first."}
         client_id, client_secret = creds
         transcript = Transcript(prefix="gui-run-add-to-glcp")
         client = central.CentralClient(central.GLP_BASE_URL, client_id, client_secret, transcript=transcript)
@@ -674,7 +729,7 @@ class Api:
 
         creds = self._glp_creds()
         if creds is None:
-            return {"ok": False, "error": "No New Central credentials stored - add one in Credentials first."}
+            return {"ok": False, "error": "The selected account has no New Central credentials - add them in Credentials first."}
         client_id, client_secret = creds
         transcript = Transcript(prefix="gui-run-assign-service")
         client = central.CentralClient(central.GLP_BASE_URL, client_id, client_secret, transcript=transcript)
@@ -686,10 +741,13 @@ class Api:
             if central_serials:
                 results.extend(central.restore_central_assignment(client, central_serials, None, None))
             if uxi_serials:
-                uxi_app = credential_store.get_uxi_application()
+                active = credential_store.get_active_account()
+                uxi_app = credential_store.get_uxi_application(active) if active else None
                 if uxi_app is None:
                     results.extend(
-                        central.UnassignResult(s, False, "No UXI application_id stored - set it in Credentials first.")
+                        central.UnassignResult(
+                            s, False, "No UXI application_id stored for the selected account - set it in Credentials first."
+                        )
                         for s in uxi_serials
                     )
                 else:
@@ -726,7 +784,7 @@ class Api:
 
         creds = self._glp_creds()
         if creds is None:
-            return {"ok": False, "error": "No New Central credentials stored - add one in Credentials first."}
+            return {"ok": False, "error": "The selected account has no New Central credentials - add them in Credentials first."}
         client_id, client_secret = creds
         transcript = Transcript(prefix="gui-run-assign-subscription")
         client = central.CentralClient(central.GLP_BASE_URL, client_id, client_secret, transcript=transcript)
@@ -878,7 +936,9 @@ class Api:
         touches: GLCP/New Central (device presence, service/application
         assignment, subscription) via list_glp_devices, then Classic
         Central (pre-provisioned group, site, check-in status) via
-        get_ap_status. The Classic Central endpoint is serial-keyed, so
+        get_device_status (AP, switch or gateway - GLCP's deviceType,
+        if present, only decides which endpoint is tried first). The
+        Classic Central endpoints are serial-keyed, so
         a MAC identifier is resolved to its serial from the GLCP match
         first - if the device isn't in GLCP yet (or no New Central
         creds are stored), a MAC input can't be resolved and the
@@ -891,10 +951,11 @@ class Api:
         serial = None if is_mac_input else identifier
 
         result: dict = {"ok": True, "identifier": identifier}
+        type_hint = None
 
         creds = self._glp_creds()
         if creds is None:
-            result["glcp"] = {"skipped": "No New Central credentials stored."}
+            result["glcp"] = {"skipped": "The selected account has no New Central credentials."}
         else:
             client_id, client_secret = creds
             transcript = Transcript(prefix="gui-check-status-glcp")
@@ -911,6 +972,7 @@ class Api:
                     result["glcp"] = {"in_glcp": False}
                 else:
                     serial = match.serial
+                    type_hint = _GLCP_DEVICE_TYPE_HINT.get(str(match.raw.get("deviceType") or "").upper())
                     result["glcp"] = {
                         "in_glcp": True,
                         "mac": match.mac_address,
@@ -929,12 +991,13 @@ class Api:
             result["classic"] = {"skipped": error}
             return result
         try:
-            status = central_classic.get_ap_status(classic_client, serial)
+            status = central_classic.get_device_status(classic_client, serial, type_hint)
         except (central_classic.ClassicAuthError, central_classic.ClassicAPIError) as exc:
             result["classic"] = {"error": str(exc)}
             return result
         result["classic"] = {
             "checked_in": status.seen,
+            "device_type": status.device_type,
             "status": status.status,
             "group": status.group_name,
             "site": status.site_name,
@@ -1054,3 +1117,74 @@ class Api:
             sheet_module.mark_site_assigned(sheet_path, assigned)
 
         return {"ok": failed == 0, "assigned": len(assigned), "failed": failed}
+
+    # --- Set Hostname (Post Onboard - New Central System Information) -------
+
+    def _new_central_client(self, prefix: str) -> tuple[object, str | None]:
+        creds = self._central_creds()
+        if creds is None:
+            return None, "The selected account has no New Central credentials - add them in Credentials first."
+        base_url, client_id, client_secret = creds
+        return central.CentralClient(base_url, client_id, client_secret, transcript=Transcript(prefix=prefix)), None
+
+    def _set_hostnames(self, pairs: list[tuple[str, str]], prefix: str) -> tuple[list, str | None]:
+        client, error = self._new_central_client(prefix)
+        if error:
+            return [], error
+        try:
+            return central.set_hostnames(client, pairs), None
+        except central.CentralAuthError as exc:
+            return [], str(exc)
+
+    def run_set_hostname(self) -> dict:
+        """Sets the hostname of every working-sheet row with a Hostname
+        set and not yet marked Hostname Set (UXI rows skipped - not a New
+        Central device). Each row's own Hostname value is used. Devices
+        must already be provisioned in New Central (in a device group or
+        site) - see core/central.py's set_hostname."""
+        sheet_path = workspace.get_sheet()
+        if sheet_path is None:
+            return {"ok": False, "error": "No working device list set."}
+        rows = sheet_module.read_devices(sheet_path)
+        pairs = [
+            (r.serial, str(r.hostname).strip())
+            for r in rows
+            if r.hostname and str(r.hostname).strip() and not r.hostname_set and r.device_type != "UXI"
+        ]
+        if not pairs:
+            return {"ok": True, "results": []}
+        results, error = self._set_hostnames(pairs, "gui-run-set-hostname")
+        if error:
+            return {"ok": False, "error": error}
+        ok_serials = [r.serial for r in results if r.ok]
+        if ok_serials:
+            sheet_module.mark_hostname_set(sheet_path, ok_serials)
+        return self._results_dict(results)
+
+    def set_hostname_manual(self, serials: list[str], hostnames: list[str]) -> dict:
+        """Explicit serial/hostname pairs (paired in order), independent
+        of the sheet. A matching sheet row is marked Hostname Set only if
+        its own Hostname column equals the hostname just applied - a
+        manual rename to something else shouldn't claim the sheet's
+        planned hostname is done."""
+        serials = [s.strip() for s in serials if s and s.strip()]
+        hostnames = [h.strip() for h in hostnames if h and h.strip()]
+        if not serials:
+            return {"ok": False, "error": "Serial(s) are required."}
+        if len(serials) != len(hostnames):
+            return {"ok": False, "error": f"{len(serials)} serial(s) but {len(hostnames)} hostname(s) - they're paired in order."}
+        pairs = list(zip(serials, hostnames))
+        results, error = self._set_hostnames(pairs, "gui-set-hostname-manual")
+        if error:
+            return {"ok": False, "error": error}
+
+        sheet_path = workspace.get_sheet()
+        if sheet_path is not None and sheet_path.exists():
+            applied = {r.serial: h for r, (_s, h) in zip(results, pairs) if r.ok}
+            to_mark = [
+                row.serial for row in sheet_module.read_devices(sheet_path)
+                if row.serial in applied and str(row.hostname or "").strip() == applied[row.serial]
+            ]
+            if to_mark:
+                sheet_module.mark_hostname_set(sheet_path, to_mark)
+        return self._results_dict(results)

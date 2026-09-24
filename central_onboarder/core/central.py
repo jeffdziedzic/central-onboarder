@@ -236,6 +236,141 @@ def list_sites(client: CentralClient) -> dict[str, str]:
     return sites
 
 
+# --- hostname (New Central System Information profile) ---------------------
+#
+# All live-confirmed 2026-09-24 against a real tenant (Home Lab, AP-555),
+# following HPE's own aruba/central-python-workflows rename-hostnames
+# recipe: a device's hostname lives in the default System Information
+# profile, set as a LOCAL (device-scoped) profile - same path for APs,
+# switches and gateways, only the persona query param differs.
+#   GET    ...?object_type=LOCAL&scope_id=<scopeId>&persona=<P>&view_type=LOCAL
+#          -> 200 {"name": ..., "hostname": ...}, or 200 {} if the device
+#             has no local profile yet (NOT a 404)
+#   POST   (same params minus view_type) body {"hostname": ...} -> create
+#   PATCH  (same params minus view_type) body {"hostname": ...} -> update
+SYSTEM_INFO_PROFILE_PATH = "network-config/v1alpha1/system-info/sys-system-info-profile"
+
+# device-inventory's deviceFunction -> config API persona. The live API
+# returns e.g. "Campus Access Point" (seen on two real tenants), NOT the
+# "Campus AP" pycentral's SUPPORTED_CONFIG_PERSONAS keys on - so both
+# spellings are here. Unprovisioned devices report "-".
+_DEVICE_FUNCTION_TO_PERSONA = {
+    "Campus Access Point": "CAMPUS_AP", "Campus AP": "CAMPUS_AP",
+    "Microbranch Access Point": "MICROBRANCH_AP", "Micro Branch Access Point": "MICROBRANCH_AP",
+    "Micro Branch AP": "MICROBRANCH_AP",
+    "Access Switch": "ACCESS_SWITCH",
+    "Core Switch": "CORE_SWITCH",
+    "Aggregation Switch": "AGG_SWITCH",
+    "Mobility Gateway": "MOBILITY_GW",
+    "Branch Gateway": "BRANCH_GW", "Branch GW": "BRANCH_GW",
+    "VPN Concentrator": "VPNC", "VPNC": "VPNC",
+    "Bridge": "BRIDGE",
+    "Hybrid NAC": "HYBRID_NAC",
+}
+_PERSONA_VALUES = set(_DEVICE_FUNCTION_TO_PERSONA.values())
+
+
+def persona_for_device_function(device_function: str | None) -> str | None:
+    if not device_function:
+        return None
+    if device_function in _DEVICE_FUNCTION_TO_PERSONA:
+        return _DEVICE_FUNCTION_TO_PERSONA[device_function]
+    if device_function.upper() in _PERSONA_VALUES:
+        return device_function.upper()
+    return None
+
+
+@dataclass
+class ConfigDevice:
+    """One device as New Central's config side sees it (device-inventory)."""
+    serial: str
+    scope_id: str | None
+    device_function: str | None
+    provisioned: bool
+    device_name: str | None
+    raw: dict = field(default_factory=dict, repr=False)
+
+    @property
+    def persona(self) -> str | None:
+        return persona_for_device_function(self.device_function)
+
+
+def get_config_device(client: CentralClient, serial: str) -> ConfigDevice | None:
+    """GET network-monitoring/v1/device-inventory filtered to one serial.
+    None if New Central doesn't know the device. client uses the
+    account's regional New Central base_url (not GLP)."""
+    body = client.get(
+        "network-monitoring/v1/device-inventory",
+        params={"filter": f"serialNumber eq {serial}", "limit": 1},
+    )["body"]
+    items = body.get("items") or []
+    if not items:
+        return None
+    d = items[0]
+    return ConfigDevice(
+        serial=d.get("serialNumber") or serial,
+        scope_id=str(d["scopeId"]) if d.get("scopeId") is not None else None,
+        device_function=d.get("deviceFunction"),
+        provisioned=str(d.get("isProvisioned", "")).strip().lower() in ("yes", "true"),
+        device_name=d.get("deviceName"),
+        raw=d,
+    )
+
+
+def get_local_hostname(client: CentralClient, scope_id: str, persona: str) -> str | None:
+    """The hostname in a device's LOCAL System Information profile, or
+    None if it has no local profile yet (the API answers 200 {})."""
+    params = {"object_type": "LOCAL", "scope_id": scope_id, "persona": persona, "view_type": "LOCAL"}
+    body = client.get(SYSTEM_INFO_PROFILE_PATH, params=params)["body"] or {}
+    return body.get("hostname")
+
+
+def set_hostname(client: CentralClient, serial: str, hostname: str) -> UnassignResult:
+    """Sets one device's hostname via its local System Information
+    profile - creates the local profile (POST) if the device has none
+    yet, otherwise updates it (PATCH). Never raises for a per-device
+    problem; returns ok=False with a readable reason instead. Auth
+    failures (CentralAuthError) still propagate - they'd fail every
+    device the same way."""
+    hostname = (hostname or "").strip()
+    if not hostname:
+        return UnassignResult(serial, False, "no hostname given")
+    try:
+        device = get_config_device(client, serial)
+    except CentralAPIError as exc:
+        return UnassignResult(serial, False, f"device lookup failed: {exc}")
+    if device is None:
+        return UnassignResult(serial, False, "not in New Central's device inventory yet (has it been onboarded?)")
+    if not device.provisioned:
+        return UnassignResult(
+            serial, False,
+            "not provisioned in New Central yet - assign it to a device group or site first",
+        )
+    if device.persona is None:
+        return UnassignResult(
+            serial, False, f"unrecognized device function {device.device_function!r} - can't pick a config persona",
+        )
+    if device.scope_id is None:
+        return UnassignResult(serial, False, "device inventory returned no scopeId")
+
+    params = {"object_type": "LOCAL", "scope_id": device.scope_id, "persona": device.persona}
+    try:
+        current = get_local_hostname(client, device.scope_id, device.persona)
+        if current is None:
+            client.post(SYSTEM_INFO_PROFILE_PATH, params=params, body={"hostname": hostname})
+        else:
+            client.patch(SYSTEM_INFO_PROFILE_PATH, params=params, body={"hostname": hostname})
+    except CentralAPIError as exc:
+        message = exc.body.get("message") if isinstance(exc.body, dict) else None
+        return UnassignResult(serial, False, message or str(exc))
+    return UnassignResult(serial, True)
+
+
+def set_hostnames(client: CentralClient, pairs: list[tuple[str, str]]) -> list[UnassignResult]:
+    """set_hostname for each (serial, hostname) pair, one at a time."""
+    return [set_hostname(client, serial, hostname) for serial, hostname in pairs]
+
+
 def create_site(
     client: CentralClient,
     name: str,

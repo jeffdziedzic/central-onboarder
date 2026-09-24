@@ -67,6 +67,67 @@ def test_get_ap_status_reraises_non_404():
         cc.get_ap_status(c, "S1")
 
 
+def _get_by_path(responses: dict):
+    """Fake client.get: path -> body, anything else 404s."""
+    calls = []
+
+    def fake_get(path, params=None):
+        calls.append(path)
+        if path in responses:
+            return {"status": 200, "body": responses[path]}
+        raise cc.ClassicAPIError("not found", status=404)
+
+    return fake_get, calls
+
+
+def test_get_device_status_finds_switch_after_ap_404():
+    c = _client()
+    c.get, calls = _get_by_path({"monitoring/v1/switches/SW1": {"status": "Up", "group_name": "g", "site": "HQ"}})
+    status = cc.get_device_status(c, "SW1")
+    assert status.seen is True
+    assert status.device_type == "Switch"
+    assert status.site_name == "HQ"
+    assert calls == ["monitoring/v1/aps/SW1", "monitoring/v1/switches/SW1"]
+
+
+def test_get_device_status_finds_gateway():
+    c = _client()
+    c.get, _ = _get_by_path({"monitoring/v1/gateways/GW1": {"status": "Up", "group_name": "g"}})
+    status = cc.get_device_status(c, "GW1")
+    assert status.device_type == "Gateway"
+    assert status.status == "Up"
+
+
+def test_get_device_status_tries_hinted_type_first():
+    c = _client()
+    c.get, calls = _get_by_path({"monitoring/v1/gateways/GW1": {"status": "Up"}})
+    cc.get_device_status(c, "GW1", "Gateway")
+    assert calls == ["monitoring/v1/gateways/GW1"]
+
+
+def test_get_device_status_wrong_hint_still_falls_back():
+    c = _client()
+    c.get, calls = _get_by_path({"monitoring/v1/aps/AP1": {"status": "Up", "site_name": "s"}})
+    status = cc.get_device_status(c, "AP1", "Switch")
+    assert status.device_type == "AP"
+    assert calls[0] == "monitoring/v1/switches/AP1"
+
+
+def test_get_device_status_all_404_means_not_seen():
+    c = _client()
+    c.get, calls = _get_by_path({})
+    status = cc.get_device_status(c, "X")
+    assert status.seen is False
+    assert len(calls) == 3
+
+
+def test_get_device_status_reraises_non_404():
+    c = _client()
+    c.get = MagicMock(side_effect=cc.ClassicAPIError("server error", status=500))
+    with pytest.raises(cc.ClassicAPIError):
+        cc.get_device_status(c, "S1")
+
+
 def test_list_sites_single_short_page():
     c = _client()
     c.get = MagicMock(return_value={

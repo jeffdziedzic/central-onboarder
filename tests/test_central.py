@@ -185,3 +185,113 @@ def test_patch_device_dedupes_serial_and_mac_of_same_device():
     assert c.patch.call_count == 1
     assert c.patch.call_args.kwargs["params"]["id"] == ["id1"]
     assert len(results) == 1
+
+
+# --- set_hostname (System Information local profile) ------------------------
+# Response shapes below are copied from live calls against a real tenant
+# (2026-09-24).
+
+_INVENTORY_AP = {
+    "count": 1, "next": None, "total": 1,
+    "items": [{
+        "serialNumber": "VNLCK9Y0NS", "scopeId": "370578829", "deviceName": "CNX-555",
+        "deviceType": "ACCESS_POINT", "deviceFunction": "Campus Access Point", "isProvisioned": "Yes",
+    }],
+}
+
+
+def _hostname_client(inventory, local_profile):
+    c = _client()
+    calls = []
+
+    def fake_get(path, params=None):
+        calls.append(("GET", path, dict(params or {})))
+        if path == "network-monitoring/v1/device-inventory":
+            return {"status": 200, "body": inventory}
+        return {"status": 200, "body": local_profile}
+
+    def fake_write(method):
+        def _w(path, params=None, body=None):
+            calls.append((method, path, dict(params or {}), body))
+            return {"status": 200, "body": {"errorCode": "SUCC_001", "httpStatusCode": 200, "message": "success"}}
+        return _w
+
+    c.get = fake_get
+    c.post = fake_write("POST")
+    c.patch = fake_write("PATCH")
+    return c, calls
+
+
+def test_set_hostname_patches_when_local_profile_exists():
+    c, calls = _hostname_client(_INVENTORY_AP, {"name": "sys-system-info-profile", "hostname": "OLD"})
+    result = central.set_hostname(c, "VNLCK9Y0NS", "NEW-NAME")
+    assert result.ok is True
+    method, path, params, body = calls[-1]
+    assert method == "PATCH"
+    assert path == central.SYSTEM_INFO_PROFILE_PATH
+    assert params == {"object_type": "LOCAL", "scope_id": "370578829", "persona": "CAMPUS_AP"}
+    assert body == {"hostname": "NEW-NAME"}
+    get_profile = calls[1]
+    assert get_profile[2]["view_type"] == "LOCAL"
+
+
+def test_set_hostname_posts_when_no_local_profile():
+    """Live: a device with no local profile answers GET with 200 {} (not 404)."""
+    c, calls = _hostname_client(_INVENTORY_AP, {})
+    assert central.set_hostname(c, "VNLCK9Y0NS", "NEW-NAME").ok is True
+    assert calls[-1][0] == "POST"
+    assert calls[-1][3] == {"hostname": "NEW-NAME"}
+
+
+@pytest.mark.parametrize("function,persona", [
+    ("Access Switch", "ACCESS_SWITCH"),
+    ("Mobility Gateway", "MOBILITY_GW"),
+    ("Campus AP", "CAMPUS_AP"),
+])
+def test_set_hostname_persona_per_device_function(function, persona):
+    inv = {"items": [{**_INVENTORY_AP["items"][0], "deviceFunction": function}]}
+    c, calls = _hostname_client(inv, {})
+    central.set_hostname(c, "VNLCK9Y0NS", "X")
+    assert calls[-1][2]["persona"] == persona
+
+
+def test_set_hostname_refuses_unprovisioned_device_without_writing():
+    inv = {"items": [{**_INVENTORY_AP["items"][0], "deviceFunction": "-", "isProvisioned": "No"}]}
+    c, calls = _hostname_client(inv, {})
+    result = central.set_hostname(c, "VNLCK9Y0NS", "X")
+    assert result.ok is False
+    assert "not provisioned" in result.detail
+    assert all(call[0] == "GET" for call in calls)
+
+
+def test_set_hostname_device_not_in_inventory():
+    c, calls = _hostname_client({"items": []}, {})
+    result = central.set_hostname(c, "NOPE", "X")
+    assert result.ok is False
+    assert "inventory" in result.detail
+
+
+def test_set_hostname_unknown_device_function():
+    inv = {"items": [{**_INVENTORY_AP["items"][0], "deviceFunction": "Space Laser"}]}
+    c, calls = _hostname_client(inv, {})
+    result = central.set_hostname(c, "VNLCK9Y0NS", "X")
+    assert result.ok is False
+    assert "Space Laser" in result.detail
+
+
+def test_set_hostname_reports_api_error_message():
+    c, calls = _hostname_client(_INVENTORY_AP, {"hostname": "OLD"})
+
+    def bad_patch(path, params=None, body=None):
+        raise central.CentralAPIError("PATCH failed", 400, {"message": "hostname invalid"})
+
+    c.patch = bad_patch
+    result = central.set_hostname(c, "VNLCK9Y0NS", "bad name!")
+    assert result.ok is False
+    assert result.detail == "hostname invalid"
+
+
+def test_set_hostname_blank_hostname():
+    c, calls = _hostname_client(_INVENTORY_AP, {})
+    assert central.set_hostname(c, "VNLCK9Y0NS", "  ").ok is False
+    assert calls == []

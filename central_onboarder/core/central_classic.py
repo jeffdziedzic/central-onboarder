@@ -248,6 +248,58 @@ class APStatus:
     down_reason: str | None = None
     ip_address: str | None = None
     raw: dict = field(default_factory=dict, repr=False)
+    device_type: str | None = None  # "AP" / "Switch" / "Gateway" - which endpoint answered
+
+
+# Classic Central's per-device monitoring endpoints are type-specific -
+# an AP serial 404s on the switch endpoint and vice versa, so a
+# switch/gateway looked up only via monitoring/v1/aps always looks
+# "not seen" even when it's Up (found live 2026-09-24: a 6100 switch
+# and a 70xx gateway both came back not-seen from the AP-only lookup).
+_STATUS_ENDPOINTS = {
+    "AP": "monitoring/v1/aps",
+    "Switch": "monitoring/v1/switches",
+    "Gateway": "monitoring/v1/gateways",
+}
+
+
+def get_device_status(
+    client: ClassicCentralClient, serial: str, device_type_hint: str | None = None
+) -> APStatus:
+    """Status for a serial of ANY device type - tries the AP, switch
+    and gateway monitoring endpoints in turn (the hinted type first,
+    if given, to save calls) and returns the first that knows the
+    serial. seen=False only if all three 404. Any non-404 failure
+    propagates.
+
+    AP responses carry the site as `site_name` (live-confirmed);
+    switch/gateway responses are read from `site_name` or `site`,
+    whichever is present - which one they use is not yet confirmed."""
+    order = list(_STATUS_ENDPOINTS)
+    if device_type_hint in _STATUS_ENDPOINTS:
+        order.remove(device_type_hint)
+        order.insert(0, device_type_hint)
+    for device_type in order:
+        try:
+            result = client.get(f"{_STATUS_ENDPOINTS[device_type]}/{serial}")
+        except ClassicAPIError as exc:
+            if exc.status == 404:
+                continue
+            raise
+        body = result["body"] or {}
+        return APStatus(
+            serial=serial,
+            seen=True,
+            status=body.get("status"),
+            group_name=body.get("group_name"),
+            site_name=body.get("site_name") or body.get("site"),
+            firmware_version=body.get("firmware_version"),
+            down_reason=body.get("down_reason"),
+            ip_address=body.get("ip_address"),
+            raw=body,
+            device_type=device_type,
+        )
+    return APStatus(serial=serial, seen=False)
 
 
 def get_ap_status(client: ClassicCentralClient, serial: str) -> APStatus:

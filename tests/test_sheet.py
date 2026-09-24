@@ -122,3 +122,89 @@ def test_grows_past_template_styled_range(tmp_path: Path):
     assert report.rows_added == len(devices)
     rows = sheet_module.read_devices(out)
     assert len(rows) == len(devices)
+
+
+# --- Hostname / Hostname Set columns (v0.4.0) ------------------------------
+
+
+def _write_v1_sheet(path: Path, rows: list[list]) -> None:
+    """A sheet in the pre-Hostname 12-column layout, with data."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = sheet_module.DEVICES_SHEET
+    ws.append(list(sheet_module._V1_DEVICES_HEADERS))
+    for r in rows:
+        ws.append(r)
+    ws.auto_filter.ref = "A1:L101"
+    wb.save(path)
+
+
+def test_hostname_round_trips_through_add_and_read(tmp_path: Path):
+    out = tmp_path / "device-list.xlsx"
+    sheet_module.add_devices_manual(out, [_device("S1", hostname="BLDG1-AP-01")])
+    assert sheet_module.read_devices(out)[0].hostname == "BLDG1-AP-01"
+
+
+def test_add_devices_from_csv_maps_hostname(tmp_path: Path):
+    out = tmp_path / "device-list.xlsx"
+    sheet_module.add_devices_from_csv([{"serial": "S1", "hostname": "AP-01"}], out)
+    assert sheet_module.read_devices(out)[0].hostname == "AP-01"
+
+
+def test_mark_hostname_set(tmp_path: Path):
+    out = tmp_path / "device-list.xlsx"
+    sheet_module.add_devices_manual(out, [_device("S1"), _device("S2")])
+    sheet_module.mark_hostname_set(out, ["S2"])
+    rows = {r.serial: r for r in sheet_module.read_devices(out)}
+    assert rows["S1"].hostname_set is None
+    assert rows["S2"].hostname_set == "Y"
+    assert rows["S2"].site_assigned is None
+
+
+def test_upgrade_moves_existing_data_into_new_layout(tmp_path: Path):
+    path = tmp_path / "old.xlsx"
+    _write_v1_sheet(path, [
+        ["S1", "AA:BB", "AP", "G1", "Site1", "KEY", "Y", "Y", "Y", "Y", "Y", "note one"],
+        ["S2", "CC:DD", "Switch", None, None, None, "Y", None, None, None, None, None],
+    ])
+    assert sheet_module.validate_sheet_schema(path).ok is False
+    assert sheet_module.upgrade_sheet_schema(path) is True
+    assert sheet_module.upgrade_sheet_schema(path) is False  # idempotent
+    assert sheet_module.validate_sheet_schema(path).ok is True
+
+    rows = {r.serial: r for r in sheet_module.read_devices(path)}
+    s1 = rows["S1"]
+    assert (s1.subscription_key, s1.hostname) == ("KEY", None)
+    assert (s1.added_to_glcp, s1.subscription_assigned, s1.service_assigned,
+            s1.preprovisioned, s1.site_assigned) == ("Y",) * 5
+    assert s1.hostname_set is None
+    assert s1.notes == "note one"
+    assert rows["S2"].added_to_glcp == "Y"
+
+    ws = openpyxl.load_workbook(path)[sheet_module.DEVICES_SHEET]
+    assert ws.auto_filter.ref == "A1:N101"
+
+
+def test_merging_into_old_sheet_upgrades_first_never_corrupts_tracking(tmp_path: Path):
+    """Without the upgrade, a new Hostname would be written into the old
+    layout's column 7 (Added to GLCP)."""
+    path = tmp_path / "old.xlsx"
+    _write_v1_sheet(path, [["S1", "AA:BB", "AP", None, None, None, None, None, None, None, None, None]])
+    sheet_module.add_devices_manual(path, [_device("S1", hostname="AP-01")])
+    row = sheet_module.read_devices(path)[0]
+    assert row.hostname == "AP-01"
+    assert row.added_to_glcp is None
+
+
+def test_upgrade_leaves_unknown_layouts_alone(tmp_path: Path):
+    path = tmp_path / "weird.xlsx"
+    wb = openpyxl.Workbook()
+    wb.active.title = sheet_module.DEVICES_SHEET
+    wb.active.append(["Serial", "Something Else"])
+    wb.save(path)
+    assert sheet_module.upgrade_sheet_schema(path) is False
+    assert sheet_module.validate_sheet_schema(path).ok is False
+
+
+def test_bundled_template_is_current_layout():
+    assert sheet_module.validate_sheet_schema(sheet_module._template_path()).ok is True

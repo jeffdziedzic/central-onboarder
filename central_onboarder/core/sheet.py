@@ -29,16 +29,22 @@ in new/changed rows and writes it straight back out.
                            assign once the device has checked in
   6  Subscription Key     operator-entered - GreenLake subscription key
                            to assign, may be blank (skip that step)
-  7  Added to GLCP        tool-owned tracking, never operator-entered
-  8  Subscription Assigned  tool-owned tracking
-  9  Service Assigned     tool-owned tracking (Central application
+  7  Hostname             operator-entered - New Central hostname to set
+                           (Post Onboard screen), may be blank
+  8  Added to GLCP        tool-owned tracking, never operator-entered
+  9  Subscription Assigned  tool-owned tracking
+  10 Service Assigned     tool-owned tracking (Central application
                            assignment - see core/central.py's
                            restore_central_assignment)
-  10 Preprovisioned       tool-owned tracking (Classic Central group)
-  11 Site Assigned        tool-owned tracking (manual, run once the
+  11 Preprovisioned       tool-owned tracking (Classic Central group)
+  12 Site Assigned        tool-owned tracking (manual, run once the
                            device has checked into Central - see the
-                           GUI's Assign Site screen)
-  12 Notes                operator-entered, never touched by this module
+                           GUI's Post Onboard screen)
+  13 Hostname Set         tool-owned tracking (Post Onboard screen)
+  14 Notes                operator-entered, never touched by this module
+
+Sheets built before Hostname/Hostname Set existed are upgraded in place
+by upgrade_sheet_schema (called before the schema check).
 """
 
 from __future__ import annotations
@@ -51,6 +57,7 @@ from importlib import resources
 from pathlib import Path
 
 import openpyxl
+from openpyxl.utils import column_index_from_string, get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 
 
@@ -81,29 +88,41 @@ COL_DEVICE_TYPE = 3
 COL_TARGET_GROUP = 4
 COL_TARGET_SITE = 5
 COL_SUBSCRIPTION_KEY = 6
-COL_ADDED_TO_GLCP = 7
-COL_SUBSCRIPTION_ASSIGNED = 8
-COL_SERVICE_ASSIGNED = 9
-COL_PREPROVISIONED = 10
-COL_SITE_ASSIGNED = 11
-COL_NOTES = 12
-NUM_COLUMNS = 12
+COL_HOSTNAME = 7
+COL_ADDED_TO_GLCP = 8
+COL_SUBSCRIPTION_ASSIGNED = 9
+COL_SERVICE_ASSIGNED = 10
+COL_PREPROVISIONED = 11
+COL_SITE_ASSIGNED = 12
+COL_HOSTNAME_SET = 13
+COL_NOTES = 14
+NUM_COLUMNS = 14
 
 # Operator-entered columns - a CSV import or manual-add merge writes
 # these; nothing else in this module ever touches them.
 EDITABLE_COLUMNS = (
     COL_SERIAL, COL_MAC, COL_DEVICE_TYPE, COL_TARGET_GROUP, COL_TARGET_SITE, COL_SUBSCRIPTION_KEY,
+    COL_HOSTNAME,
 )
 # Tool-owned tracking columns - written only by this module's mark_*
 # functions, in response to a real GUI action's result.
 TRACKING_COLUMNS = (
     COL_ADDED_TO_GLCP, COL_SUBSCRIPTION_ASSIGNED, COL_SERVICE_ASSIGNED,
-    COL_PREPROVISIONED, COL_SITE_ASSIGNED,
+    COL_PREPROVISIONED, COL_SITE_ASSIGNED, COL_HOSTNAME_SET,
 )
 
 DEVICE_TYPES = ("AP", "Switch", "Gateway", "UXI")
 
 EXPECTED_DEVICES_HEADERS = (
+    "Serial", "MAC", "Device Type", "Target Group", "Target Site", "Subscription Key", "Hostname",
+    "Added to GLCP", "Subscription Assigned", "Service Assigned", "Preprovisioned",
+    "Site Assigned", "Hostname Set", "Notes",
+)
+
+# The pre-v0.4.0 layout (no Hostname / Hostname Set) - a sheet with
+# exactly this header row is upgraded in place by upgrade_sheet_schema
+# rather than rejected.
+_V1_DEVICES_HEADERS = (
     "Serial", "MAC", "Device Type", "Target Group", "Target Site", "Subscription Key",
     "Added to GLCP", "Subscription Assigned", "Service Assigned", "Preprovisioned",
     "Site Assigned", "Notes",
@@ -145,6 +164,67 @@ def validate_sheet_schema(sheet_path: Path) -> SchemaValidationResult:
     return result
 
 
+def _insert_styled_column(ws, at: int, header: str, style_from: int, width: float) -> None:
+    """Inserts one empty column at `at` (existing columns from there on
+    shift right, data and styles with them), titles it, and styles every
+    row of it like column `style_from` (a column index AFTER the
+    insert)."""
+    ws.insert_cols(at)
+    last_row = max(ws.max_row, TEMPLATE_STYLED_LAST_ROW)
+    for row_number in range(HEADER_ROW, last_row + 1):
+        src = ws.cell(row=row_number, column=style_from)
+        dst = ws.cell(row=row_number, column=at)
+        dst.font = copy(src.font)
+        dst.border = copy(src.border)
+        dst.fill = copy(src.fill)
+        dst.number_format = src.number_format
+        dst.protection = copy(src.protection)
+        dst.alignment = copy(src.alignment)
+    ws.cell(row=HEADER_ROW, column=at).value = header
+    # insert_cols doesn't shift column widths - rebuild them.
+    widths = {letter: dim.width for letter, dim in list(ws.column_dimensions.items())}
+    shifted = {}
+    for letter, w in widths.items():
+        idx = column_index_from_string(letter)
+        shifted[idx + 1 if idx >= at else idx] = w
+    shifted[at] = width
+    for idx, w in shifted.items():
+        ws.column_dimensions[get_column_letter(idx)].width = w
+
+
+def upgrade_sheet_schema(sheet_path: Path) -> bool:
+    """If the Devices tab has exactly the pre-v0.4.0 header row, inserts
+    the Hostname (after Subscription Key) and Hostname Set (after Site
+    Assigned) columns in place, moving existing data with them. Returns
+    True if the file was upgraded, False if it didn't need it (already
+    current, or some other layout validate_sheet_schema will reject).
+    Raises SheetLockedError if the file is open in Excel."""
+    wb = openpyxl.load_workbook(sheet_path)
+    if DEVICES_SHEET not in wb.sheetnames:
+        return False
+    ws = wb[DEVICES_SHEET]
+    headers = tuple(ws.cell(row=HEADER_ROW, column=c).value for c in range(1, len(_V1_DEVICES_HEADERS) + 1))
+    trailing = ws.cell(row=HEADER_ROW, column=len(_V1_DEVICES_HEADERS) + 1).value
+    if headers != _V1_DEVICES_HEADERS or trailing is not None:
+        return False
+
+    # Hostname: operator-entered, styled like Subscription Key (col 6).
+    _insert_styled_column(ws, COL_HOSTNAME, "Hostname", style_from=COL_SUBSCRIPTION_KEY, width=20.0)
+    # Hostname Set: tracking, styled like Site Assigned (now col 12).
+    _insert_styled_column(ws, COL_HOSTNAME_SET, "Hostname Set", style_from=COL_SITE_ASSIGNED, width=13.0)
+
+    if ws.auto_filter.ref:
+        from openpyxl.utils.cell import range_boundaries
+
+        min_col, min_row, _max_col, max_row = range_boundaries(ws.auto_filter.ref)
+        ws.auto_filter.ref = (
+            f"{ws.cell(row=min_row, column=min_col).coordinate}:"
+            f"{ws.cell(row=max_row, column=NUM_COLUMNS).coordinate}"
+        )
+    _save(wb, sheet_path)
+    return True
+
+
 # The bundled template pre-formats and pre-validates rows 2-101 (borders,
 # tracking-column fill, Device Type dropdown). A large device list runs
 # past that easily - rows beyond it need formatting/validation extended
@@ -180,15 +260,18 @@ class DeviceRow:
     target_group: str | None
     target_site: str | None
     subscription_key: str | None
+    hostname: str | None
     added_to_glcp: str | None
     subscription_assigned: str | None
     service_assigned: str | None
     preprovisioned: str | None
     site_assigned: str | None
+    hostname_set: str | None
     notes: str | None
 
 
 def read_devices(sheet_path: Path) -> list[DeviceRow]:
+    upgrade_sheet_schema(sheet_path)
     wb = openpyxl.load_workbook(sheet_path)
     ws = wb[DEVICES_SHEET]
     rows = []
@@ -204,11 +287,13 @@ def read_devices(sheet_path: Path) -> list[DeviceRow]:
                 target_group=ws.cell(row=row_number, column=COL_TARGET_GROUP).value,
                 target_site=ws.cell(row=row_number, column=COL_TARGET_SITE).value,
                 subscription_key=ws.cell(row=row_number, column=COL_SUBSCRIPTION_KEY).value,
+                hostname=ws.cell(row=row_number, column=COL_HOSTNAME).value,
                 added_to_glcp=ws.cell(row=row_number, column=COL_ADDED_TO_GLCP).value,
                 subscription_assigned=ws.cell(row=row_number, column=COL_SUBSCRIPTION_ASSIGNED).value,
                 service_assigned=ws.cell(row=row_number, column=COL_SERVICE_ASSIGNED).value,
                 preprovisioned=ws.cell(row=row_number, column=COL_PREPROVISIONED).value,
                 site_assigned=ws.cell(row=row_number, column=COL_SITE_ASSIGNED).value,
+                hostname_set=ws.cell(row=row_number, column=COL_HOSTNAME_SET).value,
                 notes=ws.cell(row=row_number, column=COL_NOTES).value,
             )
         )
@@ -374,7 +459,8 @@ def _merge_devices(
 ) -> MergeDevicesReport:
     """Shared by add_devices_from_csv/add_devices_manual - devices is a
     list of dicts with keys serial/mac/device_type/target_group/
-    target_site/subscription_key (any missing key treated as blank).
+    target_site/subscription_key/hostname (any missing key treated as
+    blank).
     Merges by serial: a matched row's editable columns are overwritten
     with the new values (last-imported wins), an unmatched one is
     appended. Tracking columns/Notes are never touched.
@@ -392,6 +478,10 @@ def _merge_devices(
             return report
 
     if Path(sheet_path).exists():
+        # A pre-Hostname sheet must be upgraded BEFORE merging, or the
+        # new Hostname value would land in the old layout's column 7
+        # (Added to GLCP).
+        upgrade_sheet_schema(sheet_path)
         wb = openpyxl.load_workbook(sheet_path)
     else:
         wb = openpyxl.load_workbook(_template_path())
@@ -414,6 +504,7 @@ def _merge_devices(
                     COL_TARGET_GROUP: d.get("target_group") or None,
                     COL_TARGET_SITE: d.get("target_site") or None,
                     COL_SUBSCRIPTION_KEY: d.get("subscription_key") or None,
+                    COL_HOSTNAME: d.get("hostname") or None,
                 },
             )
         )
@@ -455,7 +546,7 @@ def add_devices_from_csv(
     """csv_rows: already-parsed CSV rows (dicts) from the GUI's CSV
     import - column names expected to match EXPECTED_DEVICES_HEADERS'
     editable subset case-insensitively (Serial/MAC/Device Type/Target
-    Group/Target Site/Subscription Key); the GUI layer is responsible
+    Group/Target Site/Subscription Key/Hostname); the GUI layer is responsible
     for parsing the raw file and normalizing header names before
     calling this."""
     devices = [
@@ -466,6 +557,7 @@ def add_devices_from_csv(
             "target_group": row.get("target_group", ""),
             "target_site": row.get("target_site", ""),
             "subscription_key": row.get("subscription_key", ""),
+            "hostname": row.get("hostname", ""),
         }
         for row in csv_rows
     ]
@@ -486,6 +578,7 @@ def _mark_column(
             )
             return report
 
+    upgrade_sheet_schema(sheet_path)
     wb = openpyxl.load_workbook(sheet_path)
     ws = wb[DEVICES_SHEET]
     wanted = set(serials)
@@ -518,6 +611,10 @@ def mark_preprovisioned(sheet_path: Path, serials: list[str], out_path: Path | N
 
 def mark_site_assigned(sheet_path: Path, serials: list[str], out_path: Path | None = None, expected_hash: str | None = None) -> MergeDevicesReport:
     return _mark_column(sheet_path, serials, COL_SITE_ASSIGNED, out_path, expected_hash)
+
+
+def mark_hostname_set(sheet_path: Path, serials: list[str], out_path: Path | None = None, expected_hash: str | None = None) -> MergeDevicesReport:
+    return _mark_column(sheet_path, serials, COL_HOSTNAME_SET, out_path, expected_hash)
 
 
 def _ensure_reference_sheet(wb: openpyxl.Workbook):

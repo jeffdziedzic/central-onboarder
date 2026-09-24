@@ -7,5 +7,7 @@ dist/
 Command Outputs/
 
 # Local machine state - see core/credential_store.py and core/workspace.py
+token.yaml
+token.yaml.tmp
 credentials.json
 workspace.json
