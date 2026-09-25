@@ -563,6 +563,93 @@ def restore_central_assignment(
     )
 
 
+_SUBSCRIPTION_PAGE_LIMIT = 50  # pycentral's SUB_GET_LIMIT for this endpoint
+
+# subscriptionType -> the device category shown in the GUI. Values seen
+# live 2026-09-24 on two real workspaces; anything else is shown as-is.
+_SUBSCRIPTION_CATEGORY = {
+    "CENTRAL_AP": "AP",
+    "CENTRAL_SWITCH": "Switch",
+    "CENTRAL_GW": "Gateway",
+    "UXI_SENSOR_CLOUD": "UXI",
+    "UXI_ZEBRA_AGENT_CLOUD": "UXI",
+    "SERVICE": "Service",
+}
+
+
+@dataclass
+class Subscription:
+    """One GreenLake subscription as GET subscriptions/v1/subscriptions
+    returns it (field names live-confirmed 2026-09-24). quantity/
+    availableQuantity come back as strings - converted here."""
+    key: str
+    subscription_type: str | None
+    tier: str | None
+    tier_description: str | None
+    quantity: int
+    available: int
+    end_time: str | None
+    status: str | None
+    is_eval: bool
+    sku_description: str | None
+    raw: dict = field(default_factory=dict, repr=False)
+
+    @property
+    def category(self) -> str:
+        return _SUBSCRIPTION_CATEGORY.get(self.subscription_type or "", self.subscription_type or "Other")
+
+    @property
+    def level(self) -> str | None:
+        """Advanced / Foundation, from the tier code (ADVANCED_AP,
+        ADVANCE_70XX, FOUNDATION_SWITCH_6100...). None for tiers that
+        are neither (VGW_500M, ANALYTICS)."""
+        tier = (self.tier or "").upper()
+        if tier.startswith("ADVANCE"):
+            return "Advanced"
+        if tier.startswith("FOUNDATION"):
+            return "Foundation"
+        return None
+
+    def is_expired(self, now: datetime | None = None) -> bool:
+        if (self.status or "").upper() == "ENDED":
+            return True
+        if not self.end_time:
+            return False
+        try:
+            end = datetime.fromisoformat(self.end_time.replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        return end <= (now or datetime.now(end.tzinfo))
+
+
+def _to_int(value) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def list_subscriptions(client: CentralClient) -> list[Subscription]:
+    """Every subscription in the GreenLake workspace, all pages. client
+    must be constructed with base_url=GLP_BASE_URL."""
+    subs = []
+    for item in _paginate(client, "subscriptions/v1/subscriptions", {}, limit=_SUBSCRIPTION_PAGE_LIMIT):
+        subs.append(Subscription(
+            key=item.get("key") or "",
+            subscription_type=item.get("subscriptionType"),
+            tier=item.get("tier"),
+            tier_description=item.get("tierDescription"),
+            quantity=_to_int(item.get("quantity")),
+            available=_to_int(item.get("availableQuantity")),
+            end_time=item.get("endTime"),
+            status=item.get("subscriptionStatus"),
+            is_eval=bool(item.get("isEval")),
+            sku_description=item.get("skuDescription"),
+            raw=item,
+        ))
+    return subs
+
+
 def get_subscription_id_by_key(client: CentralClient, key: str) -> str | None:
     """Resolves a GreenLake subscription KEY (the human-readable string
     printed on a license) to its internal subscription id. GET

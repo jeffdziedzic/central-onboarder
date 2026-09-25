@@ -15,7 +15,7 @@
       <button class="nav-item" data-screen="home">Home</button>
       <button class="nav-item" data-screen="credentials">Credentials</button>
       <button class="nav-item" data-screen="devicelist">Device List</button>
-      <button class="nav-item" data-screen="onboard">Onboard</button>
+      <button class="nav-item" data-screen="onboard">Onboard Devices</button>
       <button class="nav-item" data-screen="postonboard">Post Onboard</button>
       <button class="nav-item" data-screen="tools">Tools</button>
     </nav>
@@ -42,7 +42,7 @@
       <ol>
         <li>Set up Credentials</li>
         <li>Build a Device List (CSV or add manually)</li>
-        <li>Onboard adds devices to GLCP, assigns a subscription, assigns the service, and pre-provisions a Classic Central group, all in one Run Onboard Batch</li>
+        <li>Onboard Devices adds devices to GLCP, assigns a subscription, assigns the service, and pre-provisions a Classic Central group, all in one Run Onboard Batch</li>
         <li>Once devices have checked into Central, Post Onboard assigns their New Central site and sets their hostname</li>
       </ol>
       <p>See the user guide for more details.</p>
@@ -192,7 +192,7 @@
     </section>
 
     <section id="screen-onboard" class="screen" hidden>
-      <h1 class="pagetitle">Onboard</h1>
+      <h1 class="pagetitle">Onboard Devices</h1>
       <p class="pagesub">Adds every device not yet marked "GLCP" in the Device List to GLCP, assigns the Central service, and assigns a subscription (for rows with a Subscription Key set) - then assigns every row with a Target Group set, and not yet marked "Preprov.", to that group in Classic Central.</p>
       <div class="card">
         <button class="btn primary" id="runOnboardBatchBtn">Run Onboard Batch</button>
@@ -276,8 +276,9 @@
 
       <div class="card">
         <div class="card-title">Set Hostname</div>
-        <p class="fine-print">Sets each device's hostname in New Central (its own System Information profile, for APs, switches and gateways). The device must already be provisioned in New Central, in a site or device group. Type serials and hostnames paired in order, or check "Pull from Device List" to instead set every row with a Hostname and not yet marked "Host." (UXI rows are skipped).</p>
-        <label class="fine-print"><input type="checkbox" id="manualHostnamePullFromCsv"> Pull from Device List (sets every eligible row's own Hostname)</label>
+        <p class="fine-print">Sets each device's hostname in New Central (its own System Information profile, for APs, switches and gateways). The device must already be provisioned in New Central, in a site or device group. Tick "Set in Classic Central" for customers still on Classic: the device must have checked into Classic Central and be in a UI group (template groups are refused). Type serials and hostnames paired in order, or check "Pull from Device List" to instead set every row with a Hostname and not yet marked "Host." (UXI rows are skipped).</p>
+        <label class="fine-print check-row"><input type="checkbox" id="manualHostnamePullFromCsv"> Pull from Device List (sets every eligible row's own Hostname)</label>
+        <label class="fine-print check-row"><input type="checkbox" id="manualHostnameClassic"> Set in Classic Central instead of New Central</label>
         <div class="field"><label>Serial(s)</label><input type="text" id="manualHostnameSerials" placeholder="comma-separated"></div>
         <div class="field"><label>Hostname(s)</label><input type="text" id="manualHostnameNames" placeholder="comma-separated, same order"></div>
         <button class="btn" id="manualSetHostnameBtn">Set Hostname</button>
@@ -317,6 +318,29 @@
         <p class="fine-print">Clears the working device list pointer and every stored credential. Never deletes any actual file.</p>
         <button class="btn danger" id="resetToDefaultBtn">Reset to Default</button>
         <p class="save-note" id="resetToDefaultResult"></p>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Subscriptions</div>
+        <p class="fine-print">Every GreenLake subscription in the selected account's workspace. Available is how many devices can still be assigned to it. Expired and fully used subscriptions are hidden unless you tick the boxes.</p>
+        <button class="btn primary" id="pullSubscriptionsBtn">Pull Subscriptions</button>
+        <label class="fine-print"><input type="checkbox" id="subsShowExpired"> Show expired</label>
+        <label class="fine-print"><input type="checkbox" id="subsShowUsedUp"> Show fully used</label>
+        <p class="save-note" id="subscriptionsResult"></p>
+        <div class="grid-wrap" id="subscriptionsGridWrap" hidden>
+          <table class="grid">
+            <thead>
+              <tr><th>Key</th><th>Category</th><th>Type</th><th>Available</th><th>Ends</th><th>Eval</th></tr>
+              <tr class="filter-row">
+                <th></th>
+                <th><select id="subsFilterCategory"><option value="">All</option></select></th>
+                <th><select id="subsFilterType"><option value="">All</option></select></th>
+                <th></th><th></th><th></th>
+              </tr>
+            </thead>
+            <tbody id="subscriptionsGridBody"></tbody>
+          </table>
+        </div>
       </div>
     </section>
   </main>

@@ -2,6 +2,26 @@
 
 Newest first. This is a user-facing summary, not a full engineering log.
 
+## v0.4.1 (2026-09-24)
+
+**New features**
+- Subscriptions card (Tools screen): Pull Subscriptions lists every
+  GreenLake subscription in the selected account's workspace - key,
+  category (e.g. Advanced AP, Foundation Switch), type, available/total
+  (e.g. 5/10), end date, and an Eval flag. Expired and fully used
+  subscriptions are hidden unless you tick Show expired / Show fully
+  used. Category and Type columns have filter dropdowns (Type narrows
+  to the chosen Category).
+- Set Hostname can target **Classic Central** instead of New Central
+  (checkbox on the card), for customers still configuring in Classic.
+  APs use Classic's AP settings, switches the `_sys_hostname` variable,
+  gateways a device-level `hostname` command. UI groups only - devices
+  in template groups are refused without changes. Tested live on a
+  real AP, AOS-CX switch and 9004 gateway.
+
+**Changed**
+- The Onboard screen is now called **Onboard Devices**.
+
 ## v0.4.0 (2026-09-24)
 
 **New features**

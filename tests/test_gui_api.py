@@ -589,3 +589,83 @@ def test_working_sheet_in_old_layout_is_upgraded_on_open(tmp_path: Path):
     assert result["ok"] is True
     assert result["schema_error"] is None
     assert devices[0]["added_to_glcp"] == "Y"
+
+
+# --- Subscriptions (Tools) ---------------------------------------------------
+
+
+def test_list_subscriptions_rows_flags_and_sorting(tmp_path: Path):
+    creds_path = tmp_path / "token.yaml"
+    api = Api()
+    S = central.Subscription
+    subs = [
+        S("SW-FND", "CENTRAL_SWITCH", "FOUNDATION_SWITCH_6100", "Foundation-Switch-Class-1", 2, 0,
+          "2030-10-05T00:00:00.000Z", "STARTED", False, None),
+        S("AP-OLD", "CENTRAL_AP", "ADVANCED_AP", "Advanced AP", 10, 10, "2025-02-10T00:00:00.000Z", "NONE", True, None),
+        S("AP-NEW", "CENTRAL_AP", "ADVANCED_AP", "Advanced AP", 10, 5, "2031-02-01T14:37:16.000Z", "STARTED", False, None),
+        S("GW-VGW", "CENTRAL_GW", "VGW_500M", "VGW-500M", 6, 6, "2031-01-01T00:00:00.000Z", "NONE", True, None),
+    ]
+    with patch.object(cs, "default_path", return_value=creds_path):
+        api.save_central("acct", "https://nc", "cid", "csecret")
+        with patch.object(central, "list_subscriptions", return_value=subs):
+            result = api.list_subscriptions()
+    assert result["ok"] is True
+    rows = {r["key"]: r for r in result["subscriptions"]}
+    assert [r["key"] for r in result["subscriptions"]] == ["AP-NEW", "AP-OLD", "GW-VGW", "SW-FND"]
+    assert rows["AP-NEW"]["label"] == "Advanced AP"
+    assert (rows["AP-NEW"]["available"], rows["AP-NEW"]["quantity"]) == (5, 10)
+    assert rows["AP-NEW"]["end_date"] == "2031-02-01"
+    assert rows["AP-OLD"]["expired"] is True and rows["AP-OLD"]["is_eval"] is True
+    assert rows["SW-FND"]["label"] == "Foundation Switch"
+    assert rows["SW-FND"]["used_up"] is True
+    assert rows["GW-VGW"]["label"] == "Gateway"
+    assert rows["GW-VGW"]["type"] == "VGW-500M"
+
+
+def test_list_subscriptions_without_credentials(tmp_path: Path):
+    creds_path = tmp_path / "token.yaml"
+    api = Api()
+    with patch.object(cs, "default_path", return_value=creds_path):
+        result = api.list_subscriptions()
+    assert result["ok"] is False
+    assert "New Central" in result["error"]
+
+
+def test_run_set_hostname_classic_uses_classic_and_row_type_hints(tmp_path: Path):
+    from central_onboarder.core import central_classic
+
+    ws_path = tmp_path / "workspace.json"
+    creds_path = tmp_path / "token.yaml"
+    api = Api()
+    seen = []
+
+    def fake_classic(client, serial, hostname, hint=None):
+        seen.append((serial, hostname, hint))
+        return central_classic.HostnameResult(serial, True)
+
+    with patch.object(workspace, "default_path", return_value=ws_path), \
+         patch.object(cs, "default_path", return_value=creds_path):
+        api.save_classic("acct", "https://ag", "acid", "acs", "rt")
+        api.add_devices_manual([
+            {"serial": "GW1", "device_type": "Gateway", "hostname": "GW-01"},
+            {"serial": "SW1", "device_type": "Switch", "hostname": "SW-01"},
+        ])
+        with patch.object(central_classic, "set_hostname", side_effect=fake_classic), \
+             patch.object(central, "set_hostnames") as new_central:
+            result = api.run_set_hostname(classic=True)
+        rows = {r["serial"]: r for r in api.get_devices()["devices"]}
+
+    assert result["ok"] is True
+    assert sorted(seen) == [("GW1", "GW-01", "Gateway"), ("SW1", "SW-01", "Switch")]
+    new_central.assert_not_called()
+    assert rows["GW1"]["hostname_set"] == "Y"
+
+
+def test_set_hostname_manual_classic_without_classic_credentials(tmp_path: Path):
+    creds_path = tmp_path / "token.yaml"
+    api = Api()
+    with patch.object(cs, "default_path", return_value=creds_path):
+        api.save_central("acct", "https://nc", "cid", "csecret")  # New Central only
+        result = api.set_hostname_manual(["AP1"], ["X"], classic=True)
+    assert result["ok"] is False
+    assert "Classic Central" in result["error"]

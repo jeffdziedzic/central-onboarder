@@ -198,6 +198,10 @@ function resetAccountScopedState() {
   // Group/site pick-lists came from the previous account's tenant.
   document.getElementById("groupOptions").innerHTML = "";
   document.getElementById("siteOptions").innerHTML = "";
+  // Subscriptions belong to the previous account's workspace.
+  pulledSubscriptions = null;
+  renderSubscriptions();
+  document.getElementById("subscriptionsResult").textContent = "";
 }
 
 function wireAccountPicker() {
@@ -786,11 +790,12 @@ function wireManualSetHostname() {
   document.getElementById("manualSetHostnameBtn").addEventListener("click", async () => {
     const resultEl = document.getElementById("manualSetHostnameResult");
     const pullFromCsv = document.getElementById("manualHostnamePullFromCsv").checked;
+    const classic = document.getElementById("manualHostnameClassic").checked;
 
     let result;
     if (pullFromCsv) {
       resultEl.textContent = "Running...";
-      result = await api().run_set_hostname();
+      result = await api().run_set_hostname(classic);
     } else {
       const serials = parseIdentifiers(document.getElementById("manualHostnameSerials").value);
       const hostnames = parseIdentifiers(document.getElementById("manualHostnameNames").value);
@@ -799,12 +804,12 @@ function wireManualSetHostname() {
         return;
       }
       resultEl.textContent = "Running...";
-      result = await api().set_hostname_manual(serials, hostnames);
+      result = await api().set_hostname_manual(serials, hostnames, classic);
     }
 
     resultEl.innerHTML = result.error
       ? `<p class="save-note error">${result.error}</p>`
-      : `<div class="result-block">${renderResultsBlock(resultEl, "Set Hostname", result)}</div>`;
+      : `<div class="result-block">${renderResultsBlock(resultEl, classic ? "Set Hostname (Classic Central)" : "Set Hostname (New Central)", result)}</div>`;
     loadDevices();
   });
 }
@@ -888,6 +893,97 @@ function wireCreateSite() {
   });
 }
 
+// --- subscriptions (Tools) -------------------------------------------------
+
+// Last pull, kept so the Show expired / Show fully used checkboxes can
+// re-filter without calling GreenLake again. Cleared on account switch.
+let pulledSubscriptions = null;
+
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (c) => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+  ));
+}
+
+function renderSubscriptions() {
+  const wrap = document.getElementById("subscriptionsGridWrap");
+  const body = document.getElementById("subscriptionsGridBody");
+  const note = document.getElementById("subscriptionsResult");
+  body.innerHTML = "";
+  if (!pulledSubscriptions) {
+    wrap.hidden = true;
+    return;
+  }
+  const showExpired = document.getElementById("subsShowExpired").checked;
+  const showUsedUp = document.getElementById("subsShowUsedUp").checked;
+  const afterToggles = pulledSubscriptions.filter(
+    (s) => (showExpired || !s.expired) && (showUsedUp || !s.used_up)
+  );
+  // Category options come from what the checkboxes leave; Type options
+  // additionally narrow to the chosen Category.
+  const category = fillFilterSelect("subsFilterCategory", afterToggles.map((s) => s.label));
+  const inCategory = afterToggles.filter((s) => !category || s.label === category);
+  const type = fillFilterSelect("subsFilterType", inCategory.map((s) => s.type));
+  const visible = inCategory.filter((s) => !type || s.type === type);
+
+  const hidden = pulledSubscriptions.length - visible.length;
+  note.className = "save-note";
+  note.textContent = `${visible.length} shown` + (hidden ? `, ${hidden} hidden by the filters` : "") + ".";
+  if (visible.length === 0) {
+    body.innerHTML = '<tr><td colspan="6" class="fine-print">No subscriptions match these filters.</td></tr>';
+  }
+  visible.forEach((s) => {
+    const tr = document.createElement("tr");
+    const status = s.expired ? " (expired)" : "";
+    tr.innerHTML =
+      `<td class="mono">${escapeHtml(s.key)}</td><td>${escapeHtml(s.label)}</td><td>${escapeHtml(s.type)}</td>` +
+      `<td>${s.available}/${s.quantity}</td><td>${escapeHtml(s.end_date)}${status}</td>` +
+      `<td>${s.is_eval ? "Eval" : ""}</td>`;
+    body.appendChild(tr);
+  });
+  wrap.hidden = false;
+}
+
+// Rebuilds a column-filter <select> from the given values ("All" +
+// each distinct value, sorted), keeping the current choice if it's
+// still offered. Returns the effective selection ("" = All).
+function fillFilterSelect(id, values) {
+  const select = document.getElementById(id);
+  const current = select.value;
+  const options = [...new Set(values.filter(Boolean))].sort();
+  select.innerHTML = '<option value="">All</option>';
+  options.forEach((v) => {
+    const opt = document.createElement("option");
+    opt.value = v;
+    opt.textContent = v;
+    select.appendChild(opt);
+  });
+  select.value = options.includes(current) ? current : "";
+  return select.value;
+}
+
+function wireSubscriptions() {
+  document.getElementById("pullSubscriptionsBtn").addEventListener("click", async () => {
+    const note = document.getElementById("subscriptionsResult");
+    note.className = "save-note";
+    note.textContent = "Pulling...";
+    const result = await api().list_subscriptions();
+    if (!result.ok) {
+      pulledSubscriptions = null;
+      renderSubscriptions();
+      note.className = "save-note error";
+      note.textContent = result.error;
+      return;
+    }
+    pulledSubscriptions = result.subscriptions;
+    renderSubscriptions();
+  });
+  document.getElementById("subsShowExpired").addEventListener("change", renderSubscriptions);
+  document.getElementById("subsShowUsedUp").addEventListener("change", renderSubscriptions);
+  document.getElementById("subsFilterCategory").addEventListener("change", renderSubscriptions);
+  document.getElementById("subsFilterType").addEventListener("change", renderSubscriptions);
+}
+
 function wireResetToDefault() {
   document.getElementById("resetToDefaultBtn").addEventListener("click", () => {
     showConfirmModal(
@@ -940,6 +1036,7 @@ async function init() {
   wireManualAssignSite();
   wireManualSetHostname();
   wireCreateSite();
+  wireSubscriptions();
   wireResetToDefault();
 
   await loadVersion();

@@ -194,3 +194,9 @@ table.grid td.tick { text-align: center; color: var(--ok); font-weight: 700; }
 }
 .account-picker select:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 .mono { font-family: monospace; font-size: 13px; }
+table.grid tr.filter-row th { padding: 4px 10px; background: var(--surface); position: static; text-transform: none; }
+table.grid tr.filter-row select {
+  width: 100%; border: 1px solid var(--line); border-radius: 5px; padding: 3px 6px;
+  font-size: 12px; background: var(--bg); color: var(--ink);
+}
+.check-row { display: block; margin: 4px 0; }

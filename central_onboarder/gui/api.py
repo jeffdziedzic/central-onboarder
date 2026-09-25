@@ -386,6 +386,44 @@ class Api:
         workspace.set_sheet(path)
         return {"ok": True, **self.get_working_sheet()}
 
+    def list_subscriptions(self) -> dict:
+        """Tools screen's Subscriptions card - every GreenLake
+        subscription in the selected account's workspace. Returns them
+        all with expired/used_up flags; the page does the show/hide
+        filtering so its checkboxes don't need another API call. Sorted
+        by category, then level, then latest end date first."""
+        creds = self._glp_creds()
+        if creds is None:
+            return {"ok": False, "error": "The selected account has no New Central credentials - add them in Credentials first."}
+        client_id, client_secret = creds
+        client = central.CentralClient(
+            central.GLP_BASE_URL, client_id, client_secret, transcript=Transcript(prefix="gui-list-subscriptions")
+        )
+        try:
+            subs = central.list_subscriptions(client)
+        except (central.CentralAuthError, central.CentralAPIError) as exc:
+            return {"ok": False, "error": str(exc)}
+
+        rows = [
+            {
+                "key": s.key,
+                "category": s.category,
+                "level": s.level,
+                "label": f"{s.level} {s.category}" if s.level else s.category,
+                "type": s.tier_description or s.tier or "",
+                "available": s.available,
+                "quantity": s.quantity,
+                "end_date": (s.end_time or "")[:10],
+                "is_eval": s.is_eval,
+                "expired": s.is_expired(),
+                "used_up": s.available <= 0,
+            }
+            for s in subs
+        ]
+        rows.sort(key=lambda r: r["end_date"], reverse=True)
+        rows.sort(key=lambda r: (r["category"], r["level"] or "~"))
+        return {"ok": True, "subscriptions": rows}
+
     def reset_to_default(self) -> dict:
         """Tools screen action - clears the working-sheet pointer and
         every stored credential. Never deletes any actual file."""
@@ -1127,7 +1165,24 @@ class Api:
         base_url, client_id, client_secret = creds
         return central.CentralClient(base_url, client_id, client_secret, transcript=Transcript(prefix=prefix)), None
 
-    def _set_hostnames(self, pairs: list[tuple[str, str]], prefix: str) -> tuple[list, str | None]:
+    def _set_hostnames(
+        self, pairs: list[tuple[str, str]], prefix: str, classic: bool = False,
+        type_hints: dict[str, str] | None = None,
+    ) -> tuple[list, str | None]:
+        """New Central (default) or, with classic=True, Classic Central -
+        for customers still configuring there. type_hints (serial ->
+        AP/Switch/Gateway) only speed up Classic's device lookup."""
+        if classic:
+            client, error = self._classic_client(transcript=Transcript(prefix=prefix + "-classic"))
+            if error:
+                return [], error
+            try:
+                return [
+                    central_classic.set_hostname(client, serial, hostname, (type_hints or {}).get(serial))
+                    for serial, hostname in pairs
+                ], None
+            except central_classic.ClassicAuthError as exc:
+                return [], str(exc)
         client, error = self._new_central_client(prefix)
         if error:
             return [], error
@@ -1136,12 +1191,14 @@ class Api:
         except central.CentralAuthError as exc:
             return [], str(exc)
 
-    def run_set_hostname(self) -> dict:
+    def run_set_hostname(self, classic: bool = False) -> dict:
         """Sets the hostname of every working-sheet row with a Hostname
         set and not yet marked Hostname Set (UXI rows skipped - not a New
         Central device). Each row's own Hostname value is used. Devices
         must already be provisioned in New Central (in a device group or
-        site) - see core/central.py's set_hostname."""
+        site) - see core/central.py's set_hostname. classic=True sets it
+        in Classic Central instead (core/central_classic.py's
+        set_hostname), for customers still configuring there."""
         sheet_path = workspace.get_sheet()
         if sheet_path is None:
             return {"ok": False, "error": "No working device list set."}
@@ -1153,7 +1210,8 @@ class Api:
         ]
         if not pairs:
             return {"ok": True, "results": []}
-        results, error = self._set_hostnames(pairs, "gui-run-set-hostname")
+        hints = {r.serial: r.device_type for r in rows if r.device_type}
+        results, error = self._set_hostnames(pairs, "gui-run-set-hostname", classic=classic, type_hints=hints)
         if error:
             return {"ok": False, "error": error}
         ok_serials = [r.serial for r in results if r.ok]
@@ -1161,7 +1219,7 @@ class Api:
             sheet_module.mark_hostname_set(sheet_path, ok_serials)
         return self._results_dict(results)
 
-    def set_hostname_manual(self, serials: list[str], hostnames: list[str]) -> dict:
+    def set_hostname_manual(self, serials: list[str], hostnames: list[str], classic: bool = False) -> dict:
         """Explicit serial/hostname pairs (paired in order), independent
         of the sheet. A matching sheet row is marked Hostname Set only if
         its own Hostname column equals the hostname just applied - a
@@ -1174,7 +1232,7 @@ class Api:
         if len(serials) != len(hostnames):
             return {"ok": False, "error": f"{len(serials)} serial(s) but {len(hostnames)} hostname(s) - they're paired in order."}
         pairs = list(zip(serials, hostnames))
-        results, error = self._set_hostnames(pairs, "gui-set-hostname-manual")
+        results, error = self._set_hostnames(pairs, "gui-set-hostname-manual", classic=classic)
         if error:
             return {"ok": False, "error": error}
 

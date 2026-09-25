@@ -110,7 +110,7 @@ it against a real tenant and it did what you expected. In particular:
    credential without writing anything; Test All checks every account.
 2. **Device List** - set your working device-list file, import a CSV,
    or add/edit devices manually.
-3. **Onboard** - Run Onboard Batch: for pending devices, add to GLCP,
+3. **Onboard Devices** - Run Onboard Batch: for pending devices, add to GLCP,
    assign a subscription, assign the service (Central for AP/Switch/
    Gateway rows, UXI's application for UXI rows), and pre-provision
    AP/Switch/Gateway rows with a Target Group to a Classic Central
@@ -140,6 +140,21 @@ it against a real tenant and it did what you expected. In particular:
      skipped, nothing is written. Type serials and hostnames paired in
      order, or check "Pull from Device List" to set every row with a
      Hostname not yet marked "Host." (UXI rows skipped).
+     Tick **Set in Classic Central** for customers still configuring in
+     Classic Central. The device must have checked into Classic Central.
+     APs are renamed through Classic's AP settings, switches through
+     their `_sys_hostname` variable, and gateways with a device-level `hostname` command in their
+     group. **UI groups only**: a device in a Classic template group
+     is refused without changing anything (its hostname belongs to
+     the customer's template). Tested on AOS10 UI-group APs and
+     gateways and an AOS-CX switch.
    - **Create New Site**.
-5. **Tools** - Reset to Default (clears the working device list pointer
-   and every stored credential).
+5. **Tools**
+   - **Reset to Default** (clears the working device list pointer and
+     every stored credential).
+   - **Subscriptions**: Pull Subscriptions lists the selected
+     account's GreenLake subscriptions - key, category (Advanced AP,
+     Foundation Switch...), type, available/total, end date, Eval.
+     Expired and fully used ones are hidden unless you tick the boxes;
+     Category and Type have filter dropdowns. Handy for picking a
+     Subscription Key for the device list. Read-only.

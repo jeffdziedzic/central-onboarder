@@ -215,3 +215,114 @@ def test_token_manager_raises_on_non_200():
 
     with pytest.raises(cc.ClassicAuthError):
         tm.get_token()
+
+
+# --- set_hostname (Classic Central) ------------------------------------------
+# Request/response shapes live-confirmed 2026-09-24 (AP, AOS-CX switch and
+# AOS10 gateway on a real workspace).
+
+def _classic_hostname_client(found: dict, caas_body=None, template=None):
+    """found: monitoring path -> body; anything else under monitoring 404s.
+    template: {"Wired": bool, "Wireless": bool} for every group (default
+    both False = UI group)."""
+    c = _client()
+    calls = []
+
+    def fake_call(method, path, params=None, body=None):
+        calls.append((method, path, params, body))
+        if path.startswith("monitoring/"):
+            if path in found:
+                return {"status": 200, "body": found[path]}
+            raise cc.ClassicAPIError("not found", status=404)
+        if path == "configuration/v2/groups/template_info":
+            return {"status": 200, "body": {"data": [
+                {"group": params["groups"], "template_details": template or {"Wired": False, "Wireless": False}}
+            ]}}
+        if path.startswith("configuration/v2/ap_settings/") and method == "GET":
+            return {"status": 200, "body": {"hostname": "OLD", "ip_address": "0.0.0.0", "zonename": "_#ALL#_"}}
+        if path == "caasapi/v1/exec/cmd":
+            return {"status": 200, "body": caas_body or {
+                "_global_result": {"status": 0, "status_str": "Success"},
+                "cli_cmds_result": [{body["cli_cmds"][0]: {"status": 0, "status_str": ""}}],
+            }}
+        return {"status": 200, "body": "Success"}
+
+    c._call = fake_call
+    c.get = lambda path, params=None: fake_call("GET", path, params)
+    c.post = lambda path, body=None: fake_call("POST", path, None, body)
+    c.patch = lambda path, body=None: fake_call("PATCH", path, None, body)
+    return c, calls
+
+
+def test_classic_set_hostname_ap_posts_full_settings_with_new_hostname():
+    c, calls = _classic_hostname_client({"monitoring/v1/aps/AP1": {"status": "Up", "group_name": "G"}})
+    result = cc.set_hostname(c, "AP1", "NEW-AP", "AP")
+    assert result.ok is True
+    method, path, _params, body = calls[-1]
+    assert (method, path) == ("POST", "configuration/v2/ap_settings/AP1")
+    assert body == {"hostname": "NEW-AP", "ip_address": "0.0.0.0", "zonename": "_#ALL#_"}
+
+
+def test_classic_set_hostname_switch_patches_sys_hostname_variable():
+    c, calls = _classic_hostname_client({"monitoring/v1/switches/SW1": {"status": "Down", "group_name": "Switches"}})
+    result = cc.set_hostname(c, "SW1", "NEW-SW")
+    assert result.ok is True
+    assert calls[-1] == ("PATCH", "configuration/v1/devices/SW1/template_variables", None,
+                         {"variables": {"_sys_hostname": "NEW-SW"}})
+
+
+def test_classic_set_hostname_gateway_uses_caasapi_device_node():
+    c, calls = _classic_hostname_client({"monitoring/v1/gateways/GW1": {
+        "status": "Up", "group_name": "Branch - New", "macaddr": "20:4c:03:b6:e1:6a"}})
+    result = cc.set_hostname(c, "GW1", "NEW-GW", "Gateway")
+    assert result.ok is True
+    method, path, params, body = calls[-1]
+    assert (method, path) == ("POST", "caasapi/v1/exec/cmd")
+    assert params == {"group_name": "Branch - New/20:4C:03:B6:E1:6A"}
+    assert body == {"cli_cmds": ["hostname NEW-GW"]}
+
+
+def test_classic_set_hostname_gateway_caasapi_failure_inside_200():
+    bad = {"_global_result": {"status": 1, "status_str": "Invalid node"}, "cli_cmds_result": []}
+    c, _calls = _classic_hostname_client({"monitoring/v1/gateways/GW1": {
+        "status": "Up", "group_name": "G", "macaddr": "aa:bb:cc:dd:ee:ff"}}, caas_body=bad)
+    result = cc.set_hostname(c, "GW1", "X", "Gateway")
+    assert result.ok is False
+    assert "Invalid node" in result.detail
+
+
+def test_classic_set_hostname_unknown_device():
+    c, calls = _classic_hostname_client({})
+    result = cc.set_hostname(c, "NOPE", "X")
+    assert result.ok is False
+    assert "not found in Classic Central" in result.detail
+    assert all(call[1].startswith("monitoring/") for call in calls)
+
+
+def test_classic_set_hostname_blank():
+    c, calls = _classic_hostname_client({})
+    assert cc.set_hostname(c, "AP1", " ").ok is False
+    assert calls == []
+
+
+@pytest.mark.parametrize("found,hint,template", [
+    ({"monitoring/v1/switches/D1": {"status": "Up", "group_name": "TG"}}, "Switch", {"Wired": True, "Wireless": False}),
+    ({"monitoring/v1/aps/D1": {"status": "Up", "group_name": "TG"}}, "AP", {"Wired": False, "Wireless": True}),
+    ({"monitoring/v1/gateways/D1": {"status": "Up", "group_name": "TG", "macaddr": "aa:bb:cc:dd:ee:ff"}},
+     "Gateway", {"Wired": False, "Wireless": True}),
+])
+def test_classic_set_hostname_refuses_template_groups_without_writing(found, hint, template):
+    c, calls = _classic_hostname_client(found, template=template)
+    result = cc.set_hostname(c, "D1", "X", hint)
+    assert result.ok is False
+    assert "template group" in result.detail
+    assert all(method == "GET" for method, *_ in calls)
+
+
+def test_classic_set_hostname_switch_allowed_when_only_wireless_is_templated():
+    c, calls = _classic_hostname_client(
+        {"monitoring/v1/switches/SW1": {"status": "Up", "group_name": "Mixed"}},
+        template={"Wired": False, "Wireless": True},
+    )
+    assert cc.set_hostname(c, "SW1", "SW-NEW", "Switch").ok is True
+    assert calls[-1][0] == "PATCH"

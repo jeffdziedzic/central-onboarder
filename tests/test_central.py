@@ -295,3 +295,56 @@ def test_set_hostname_blank_hostname():
     c, calls = _hostname_client(_INVENTORY_AP, {})
     assert central.set_hostname(c, "VNLCK9Y0NS", "  ").ok is False
     assert calls == []
+
+
+# --- list_subscriptions ------------------------------------------------------
+# Item shape copied from a live GET subscriptions/v1/subscriptions
+# (2026-09-24) - note quantity/availableQuantity are strings.
+
+def _sub_item(key, sub_type, tier, desc, qty, avail, end, status="STARTED", is_eval=False):
+    return {
+        "id": f"id-{key}", "type": "subscriptions/subscription", "key": key,
+        "subscriptionType": sub_type, "tier": tier, "tierDescription": desc,
+        "quantity": str(qty), "availableQuantity": str(avail), "isEval": is_eval,
+        "skuDescription": "sku", "endTime": end, "subscriptionStatus": status, "productType": "DEVICE",
+    }
+
+
+def test_list_subscriptions_parses_and_paginates():
+    c = _client()
+    page1 = {"items": [_sub_item("K1", "CENTRAL_AP", "ADVANCED_AP", "Advanced AP", 10, 5, "2031-02-01T14:37:16.000Z")],
+             "count": 1, "offset": 0, "total": 2}
+    page2 = {"items": [_sub_item("K2", "CENTRAL_SWITCH", "FOUNDATION_SWITCH_6100", "Foundation-Switch-Class-1",
+                                 2, 0, "2030-10-05T00:00:00.000Z")],
+             "count": 1, "offset": 1, "total": 2}
+    pages = iter([{"status": 200, "body": page1}, {"status": 200, "body": page2}])
+    c.get = MagicMock(side_effect=lambda *a, **k: next(pages))
+    subs = central.list_subscriptions(c)
+    assert [s.key for s in subs] == ["K1", "K2"]
+    assert (subs[0].quantity, subs[0].available) == (10, 5)
+    assert c.get.call_args_list[0].args[0] == "subscriptions/v1/subscriptions"
+    assert c.get.call_args_list[1].kwargs["params"]["offset"] == 1
+
+
+@pytest.mark.parametrize("sub_type,tier,category,level", [
+    ("CENTRAL_AP", "ADVANCED_AP", "AP", "Advanced"),
+    ("CENTRAL_SWITCH", "FOUNDATION_SWITCH_6100", "Switch", "Foundation"),
+    ("CENTRAL_GW", "ADVANCE_70XX", "Gateway", "Advanced"),
+    ("CENTRAL_GW", "VGW_500M", "Gateway", None),
+    ("UXI_SENSOR_CLOUD", "FOUNDATION_SENSOR_CLOUD", "UXI", "Foundation"),
+    ("SERVICE", "ANALYTICS", "Service", None),
+])
+def test_subscription_category_and_level(sub_type, tier, category, level):
+    s = central.Subscription("K", sub_type, tier, "", 1, 1, None, "STARTED", False, None)
+    assert s.category == category
+    assert s.level == level
+
+
+def test_subscription_expiry():
+    from datetime import datetime, timezone
+    now = datetime(2026, 9, 24, tzinfo=timezone.utc)
+    mk = lambda end, status="STARTED": central.Subscription("K", "CENTRAL_AP", "ADVANCED_AP", "", 1, 1, end, status, False, None)
+    assert mk("2031-02-01T14:37:16.000Z").is_expired(now) is False
+    assert mk("2025-02-10T00:00:00.000Z", "NONE").is_expired(now) is True
+    assert mk("2031-02-01T14:37:16.000Z", "ENDED").is_expired(now) is True
+    assert mk(None).is_expired(now) is False

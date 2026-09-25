@@ -146,6 +146,9 @@ class ClassicCentralClient:
     def post(self, path: str, body: dict | None = None) -> dict:
         return self._call("POST", path, body=body)
 
+    def patch(self, path: str, body: dict | None = None) -> dict:
+        return self._call("PATCH", path, body=body)
+
     def delete(self, path: str, body: dict | None = None) -> dict:
         return self._call("DELETE", path, body=body)
 
@@ -300,6 +303,127 @@ def get_device_status(
             device_type=device_type,
         )
     return APStatus(serial=serial, seen=False)
+
+
+# --- hostname (Classic Central) -------------------------------------------
+#
+# For customers still configuring in Classic Central. Classic has no
+# single "system info" object - each device type is different. All three
+# live-verified 2026-09-24 on a real workspace (AOS10 UI group AP and
+# gateway, AOS-CX switch in a UI group), each renamed and restored:
+#   AP      GET/POST configuration/v2/ap_settings/{serial} (POST takes the
+#           full settings object back, with hostname changed)
+#   Switch  PATCH configuration/v1/devices/{serial}/template_variables
+#           {"variables": {"_sys_hostname": ...}} - Classic keeps switch
+#           hostnames in this system variable even in UI groups
+#   Gateway POST caasapi/v1/exec/cmd?group_name=<group>/<MAC>
+#           {"cli_cmds": ["hostname ..."]} - device-level node of the
+#           gateway's group; no cid param needed with an OAuth token
+
+
+@dataclass
+class HostnameResult:
+    serial: str
+    ok: bool
+    detail: str | None = None
+
+
+def _error_text(exc: ClassicAPIError) -> str:
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        for key in ("description", "message", "error", "detail"):
+            if body.get(key):
+                return str(body[key])
+    return str(exc)
+
+
+def set_ap_hostname(client: ClassicCentralClient, serial: str, hostname: str) -> None:
+    path = f"configuration/v2/ap_settings/{serial}"
+    settings = client.get(path)["body"] or {}
+    client.post(path, body={**settings, "hostname": hostname})
+
+
+def set_switch_hostname(client: ClassicCentralClient, serial: str, hostname: str) -> None:
+    client.patch(
+        f"configuration/v1/devices/{serial}/template_variables",
+        body={"variables": {"_sys_hostname": hostname}},
+    )
+
+
+def set_gateway_hostname(client: ClassicCentralClient, group: str, mac: str, hostname: str) -> None:
+    """Raises ClassicAPIError if caasapi reports a failure inside an HTTP
+    200 (it returns per-command status codes rather than an HTTP error)."""
+    result = client._call(
+        "POST", "caasapi/v1/exec/cmd",
+        params={"group_name": f"{group}/{mac.upper()}"},
+        body={"cli_cmds": [f"hostname {hostname}"]},
+    )
+    body = result["body"] or {}
+    overall = (body.get("_global_result") or {})
+    if overall.get("status", 0) != 0:
+        raise ClassicAPIError(f"caasapi: {overall.get('status_str') or 'failed'}", result["status"], body)
+    for entry in body.get("cli_cmds_result") or []:
+        for cmd, outcome in entry.items():
+            if (outcome or {}).get("status", 0) != 0:
+                raise ClassicAPIError(
+                    f"caasapi rejected '{cmd}': {outcome.get('status_str') or 'failed'}", result["status"], body
+                )
+
+
+def is_template_group(client: ClassicCentralClient, group: str, device_type: str) -> bool:
+    """True if `group` uses templates for this device type. GET
+    configuration/v2/groups/template_info returns per group
+    {"Wired": bool, "Wireless": bool} (live-confirmed 2026-09-24) - Wired
+    covers switches, Wireless covers APs and gateways."""
+    body = client.get("configuration/v2/groups/template_info", params={"groups": group})["body"] or {}
+    for entry in body.get("data") or []:
+        if entry.get("group") == group:
+            details = entry.get("template_details") or {}
+            return bool(details.get("Wired" if device_type == "Switch" else "Wireless"))
+    return False
+
+
+def set_hostname(
+    client: ClassicCentralClient, serial: str, hostname: str, device_type_hint: str | None = None
+) -> HostnameResult:
+    """Sets one device's hostname in Classic Central, picking the method
+    by device type (looked up via get_device_status - the hint only
+    decides which endpoint is tried first). UI groups only, by design:
+    a device in a template group is refused without writing anything
+    (its hostname belongs to the customer's template). Never raises for
+    a per-device problem; auth failures (ClassicAuthError) still
+    propagate."""
+    hostname = (hostname or "").strip()
+    if not hostname:
+        return HostnameResult(serial, False, "no hostname given")
+    try:
+        status = get_device_status(client, serial, device_type_hint)
+    except ClassicAPIError as exc:
+        return HostnameResult(serial, False, f"device lookup failed: {_error_text(exc)}")
+    if not status.seen:
+        return HostnameResult(serial, False, "not found in Classic Central (has it checked in?)")
+    if status.device_type not in ("AP", "Switch", "Gateway"):
+        return HostnameResult(serial, False, f"unsupported device type {status.device_type!r}")
+    if not status.group_name:
+        return HostnameResult(serial, False, "Classic Central reported no group for this device")
+    try:
+        if is_template_group(client, status.group_name, status.device_type):
+            return HostnameResult(
+                serial, False,
+                f"group '{status.group_name}' is a template group - only UI groups are supported",
+            )
+        if status.device_type == "AP":
+            set_ap_hostname(client, serial, hostname)
+        elif status.device_type == "Switch":
+            set_switch_hostname(client, serial, hostname)
+        else:
+            mac = status.raw.get("macaddr")
+            if not mac:
+                return HostnameResult(serial, False, "gateway's MAC not reported by Classic Central")
+            set_gateway_hostname(client, status.group_name, mac, hostname)
+    except ClassicAPIError as exc:
+        return HostnameResult(serial, False, _error_text(exc))
+    return HostnameResult(serial, True)
 
 
 def get_ap_status(client: ClassicCentralClient, serial: str) -> APStatus:
