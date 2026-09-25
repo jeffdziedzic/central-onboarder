@@ -39,8 +39,26 @@ python -m venv .venv
 
 Produces `dist/Central Onboarder/Central Onboarder.exe` plus its
 `_internal/` support folder. Double-click the `.exe` directly - no
-install step. Distribute by zipping the whole `Central Onboarder/`
-folder; the operator unzips it anywhere and runs the `.exe` inside.
+install step.
+
+## Distributing
+
+Do NOT zip the whole `dist/Central Onboarder/` folder once you've run
+the app from it - by then it also holds your own `token.yaml` (every
+account's API credentials), device list, `workspace.json` and
+`Command Outputs/` logs. Zip only:
+
+- `Central Onboarder.exe`
+- `_internal/`
+- `READ_ME_FIRST.txt` (this folder), renamed to `READ ME FIRST.txt`
+  with Windows line endings - install steps, SmartScreen "Run anyway",
+  first-time Credentials setup, which files are private, updating.
+
+all under a top-level `Central Onboarder/` folder, named
+`Central Onboarder v<VERSION> (Windows).zip`. The operator unzips it
+anywhere and runs the `.exe`; the app creates its own `token.yaml` on
+first save. Unzip-to-a-different-folder-and-run was verified for
+v0.4.1 (2026-09-25): starts clean, no accounts, logs beside the exe.
 
 ## What's actually confirmed live (2026-09-17), not guessed
 
